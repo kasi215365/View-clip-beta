@@ -1,0 +1,148 @@
+{
+  "timestamp": "2025-12-03T00:34:57.493563",
+  "total_tests": 28,
+  "passed_tests": 27,
+  "success_rate": 96.42857142857143,
+  "results": [
+    {
+      "test": "User Registration",
+      "success": true,
+      "details": "Status: 200"
+    },
+    {
+      "test": "User Login",
+      "success": true,
+      "details": "Status: 200"
+    },
+    {
+      "test": "Get Current User",
+      "success": true,
+      "details": "Status: 200"
+    },
+    {
+      "test": "Get All Content",
+      "success": true,
+      "details": "Status: 200"
+    },
+    {
+      "test": "Get Movies",
+      "success": true,
+      "details": "Status: 200"
+    },
+    {
+      "test": "Get TV Shows",
+      "success": true,
+      "details": "Status: 200"
+    },
+    {
+      "test": "Get Sports",
+      "success": true,
+      "details": "Status: 200"
+    },
+    {
+      "test": "Admin Registration",
+      "success": true,
+      "details": "Status: 200"
+    },
+    {
+      "test": "Create Content (Admin)",
+      "success": true,
+      "details": "Status: 200"
+    },
+    {
+      "test": "Get Specific Content",
+      "success": true,
+      "details": "Status: 200"
+    },
+    {
+      "test": "Increment Content View",
+      "success": true,
+      "details": "Status: 200"
+    },
+    {
+      "test": "Get All Streams",
+      "success": true,
+      "details": "Status: 200"
+    },
+    {
+      "test": "Get Live Streams",
+      "success": true,
+      "details": "Status: 200"
+    },
+    {
+      "test": "Get Past Streams",
+      "success": true,
+      "details": "Status: 200"
+    },
+    {
+      "test": "Viewer Subscription",
+      "success": true,
+      "details": "Status: 200"
+    },
+    {
+      "test": "Get Subscription Status",
+      "success": true,
+      "details": "Status: 200"
+    },
+    {
+      "test": "Streamer Registration",
+      "success": true,
+      "details": "Status: 200"
+    },
+    {
+      "test": "Streamer Subscription",
+      "success": true,
+      "details": "Status: 200"
+    },
+    {
+      "test": "Create Live Stream",
+      "success": true,
+      "details": "Status: 200"
+    },
+    {
+      "test": "Get Specific Stream",
+      "success": true,
+      "details": "Status: 200"
+    },
+    {
+      "test": "Get Earnings",
+      "success": true,
+      "details": "Status: 200"
+    },
+    {
+      "test": "Get Total Earnings",
+      "success": true,
+      "details": "Status: 200"
+    },
+    {
+      "test": "End Stream",
+      "success": true,
+      "details": "Status: 200"
+    },
+    {
+      "test": "Save Stream",
+      "success": true,
+      "details": "Status: 200"
+    },
+    {
+      "test": "Send Comment",
+      "success": true,
+      "details": "Status: 200"
+    },
+    {
+      "test": "Get Comments",
+      "success": true,
+      "details": "Status: 200"
+    },
+    {
+      "test": "Send Gift",
+      "success": true,
+      "details": "Status: 200"
+    },
+    {
+      "test": "Join Stream",
+      "success": false,
+      "details": "Status: 404 (Expected: 200) - Stream not found or not live"
+    }
+  ]
+}
