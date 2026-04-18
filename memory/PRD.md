@@ -26,6 +26,19 @@ A hybrid VOD + Live Streaming platform (Hulu/ESPN meets Twitch/Bigo-Live) brande
 
 ## Implemented (CHANGELOG)
 
+### 2026-02 (phase 3) — Enterprise architecture
+- **Triple-layer database** — `DBRouter` transparently maps collections to 3 logical DBs (`viewclip_identity`, `viewclip_streaming`, `viewclip_vault`). Each layer is swappable to its own physical cluster via env vars. One-shot migration on startup moved 221 documents from the legacy DB.
+- **Vault field-level encryption** — Fernet (AES-128-CBC + HMAC-SHA256) for banking account/routing numbers. `/api/vault/banking` returns only last-4 masked values. Per-write audit log.
+- **Level-3 Logic Firewall** — `FirewallMiddleware` with per-IP sliding-window rate limiting (default 300 req/min), global request counter, blocked-request counter, top-paths telemetry.
+- **Admin System Control Panel** (`/admin` → System tab) —
+  - Live health monitor for all 3 DB layers with latency
+  - Encryption status (algorithm, key presence)
+  - Hot-swappable cloud streaming providers (Mux / AWS IVS / Cloudflare Stream / mock)
+  - Actions: Reload Settings, Deploy Update, Rotate Keys
+  - System events feed + Audit log feed
+- **Self-promotion engine boot seed** — 3 default View/Clip Originals promos auto-inserted on first startup; Browse page renders an "Originals Hero" strip at the top
+- **$7 viewer can receive gifts** — `/api/gifts/send` now accepts `recipient_id` (direct user-to-user gifting) OR `stream_id` (stream-bound). Earnings accrue to any user, not just streamers. `/api/earnings` & `/api/earnings/total` no longer require streamer role.
+
 ### 2026-02 (phase 2) — Productivity & engagement suite
 - **Referral leaderboard** — `referral_code` auto-generated on signup; `referred_by` attribution; 10% commission credited to referrer on referred user's first paid subscription; public `/api/referrals/leaderboard` endpoint; `/leaderboard` page with medal ranking
 - **Follow system** — `/api/streamers/{id}/follow`, `/unfollow`, `/follow-status`, `/api/users/me/follows`; Follow button on StreamView; follower count shown
