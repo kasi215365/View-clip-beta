@@ -380,6 +380,85 @@ async def _notify(user_id: str, notification_type: str, title: str, body: str, d
         "created_at": now_iso(),
     })
 
+
+async def _notify_all_admins(notification_type: str, title: str, body: str, data: Optional[Dict[str, Any]] = None):
+    """Fan-out a notification to every admin account — used for security anomalies."""
+    admins = await db.users.find({"role": "admin"}, {"_id": 0, "id": 1}).to_list(1000)
+    for a in admins:
+        await _notify(a["id"], notification_type, title, body, data)
+
+
+async def _check_admin_anomalies(user_id: str, email: str, ip: str, success: bool):
+    """Push anomaly alerts to all admins on:
+      1. Successful login from a never-before-seen IP for this admin
+      2. >=3 failed attempts for this email within the last 5 minutes
+    """
+    now = datetime.now(timezone.utc)
+
+    if success:
+        # Has this admin ever logged in from this IP before?
+        prior = await db.audit_log.find_one(
+            {"actor_id": user_id, "action": "admin.auth.success",
+             "meta.ip": ip, "created_at": {"$lt": now_iso()}},
+            {"_id": 0, "id": 1},
+        )
+        # Also skip if this is the very first success (genuine first login is not an anomaly)
+        first_ever = await db.audit_log.count_documents(
+            {"actor_id": user_id, "action": "admin.auth.success"}
+        )
+        if not prior and first_ever > 1:
+            await _notify_all_admins(
+                "security_anomaly",
+                "New admin login IP detected",
+                f"{email} signed in from {ip} — first time seen.",
+                {"kind": "new_ip", "email": email, "ip": ip, "user_id": user_id},
+            )
+    else:
+        # Count recent failures for this email
+        since = (now - timedelta(minutes=5)).isoformat()
+        fail_count = await db.audit_log.count_documents({
+            "action": {"$in": ["admin.auth.failed", "admin.auth.2fa_failed"]},
+            "meta.email": email,
+            "created_at": {"$gte": since},
+        })
+        if fail_count >= 3:
+            # Avoid spamming — only alert when we hit the threshold (3, 6, 9…)
+            if fail_count % 3 == 0:
+                await _notify_all_admins(
+                    "security_anomaly",
+                    "Admin login brute-force detected",
+                    f"{fail_count} failed attempts for {email} in the last 5 minutes (last IP {ip}).",
+                    {"kind": "brute_force", "email": email, "ip": ip, "count": fail_count},
+                )
+
+
+def _generate_recovery_codes(n: int = 10) -> List[str]:
+    """Generate human-readable one-time recovery codes like XK3F-7P2M-9QRS."""
+    import secrets
+    alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # no ambiguous chars
+    codes = []
+    for _ in range(n):
+        parts = [''.join(secrets.choice(alphabet) for _ in range(4)) for _ in range(3)]
+        codes.append("-".join(parts))
+    return codes
+
+
+def _hash_recovery_code(code: str) -> str:
+    normalized = code.replace("-", "").replace(" ", "").upper()
+    return bcrypt.hashpw(normalized.encode(), bcrypt.gensalt()).decode()
+
+
+def _verify_recovery_code(code: str, hashed_list: List[str]) -> int:
+    """Returns index of matched hash or -1."""
+    normalized = code.replace("-", "").replace(" ", "").upper()
+    for i, h in enumerate(hashed_list):
+        try:
+            if bcrypt.checkpw(normalized.encode(), h.encode()):
+                return i
+        except Exception:
+            continue
+    return -1
+
 def get_stripe_checkout(request: Request) -> StripeCheckout:
     host_url = str(request.base_url).rstrip('/')
     webhook_url = f"{host_url}/api/webhook/stripe"
@@ -456,6 +535,7 @@ async def admin_login(credentials: AdminLogin, request: Request):
             "meta": {"email": credentials.email, "reason": "bad_credentials", "ip": client_ip},
             "created_at": now_iso(),
         })
+        await _check_admin_anomalies(user.get("id") if user else "", credentials.email, client_ip, success=False)
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     if user.get("role") != "admin":
@@ -473,8 +553,22 @@ async def admin_login(credentials: AdminLogin, request: Request):
         if not credentials.totp_code:
             # Signal the client to render the 2FA step (no token yet)
             return {"require_2fa": True, "message": "Enter 6-digit code from your authenticator app"}
-        secret = user.get("totp_secret")
-        if not secret or not pyotp.TOTP(secret).verify(credentials.totp_code, valid_window=1):
+
+        stored_secret = user.get("totp_secret")
+        plain_secret = vault_decrypt(stored_secret) if stored_secret else None
+        verified = False
+        recovery_used = -1
+
+        # Accept either a TOTP code or a recovery code
+        code_clean = credentials.totp_code.replace("-", "").replace(" ", "").upper()
+        if len(code_clean) == 6 and code_clean.isdigit() and plain_secret:
+            verified = pyotp.TOTP(plain_secret).verify(credentials.totp_code, valid_window=1)
+        elif len(code_clean) >= 12:
+            # Recovery code path
+            recovery_used = _verify_recovery_code(credentials.totp_code, user.get("totp_recovery_codes") or [])
+            verified = recovery_used >= 0
+
+        if not verified:
             await db.audit_log.insert_one({
                 "id": str(uuid.uuid4()),
                 "actor_id": user["id"],
@@ -482,10 +576,29 @@ async def admin_login(credentials: AdminLogin, request: Request):
                 "meta": {"email": credentials.email, "ip": client_ip},
                 "created_at": now_iso(),
             })
+            await _check_admin_anomalies(user["id"], credentials.email, client_ip, success=False)
             raise HTTPException(status_code=401, detail="Invalid 2FA code")
 
+        # Burn the recovery code so it can't be reused
+        if recovery_used >= 0:
+            codes = list(user.get("totp_recovery_codes") or [])
+            codes.pop(recovery_used)
+            await db.users.update_one({"id": user["id"]}, {"$set": {"totp_recovery_codes": codes}})
+            await db.audit_log.insert_one({
+                "id": str(uuid.uuid4()),
+                "actor_id": user["id"],
+                "action": "admin.auth.recovery_used",
+                "meta": {"email": credentials.email, "ip": client_ip, "remaining": len(codes)},
+                "created_at": now_iso(),
+            })
+            await _notify(user["id"], "security_anomaly",
+                          "Recovery code used",
+                          f"A recovery code was used to sign in from {client_ip}. {len(codes)} codes remain.",
+                          {"kind": "recovery_used", "remaining": len(codes)})
+
     token = create_token(user['id'], user['email'], user['role'])
-    payload = {k: v for k, v in user.items() if k not in ['_id', 'password_hash', 'totp_secret']}
+    payload = {k: v for k, v in user.items()
+               if k not in ['_id', 'password_hash', 'totp_secret', 'totp_secret_pending', 'totp_recovery_codes']}
     payload.setdefault("gift_wallet", {})
     payload.setdefault("connect_account_status", "not_onboarded")
 
@@ -496,6 +609,7 @@ async def admin_login(credentials: AdminLogin, request: Request):
         "meta": {"email": user["email"], "ip": client_ip, "twofa": bool(user.get("totp_enabled"))},
         "created_at": now_iso(),
     })
+    await _check_admin_anomalies(user["id"], user["email"], client_ip, success=True)
     return {"token": token, "user": User(**payload), "portal": "staff"}
 
 @api_router.post("/admin/auth/2fa/setup")
