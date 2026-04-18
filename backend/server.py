@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field, ConfigDict, EmailStr
 from typing import List, Optional, Dict, Any
 import uuid
 import time
+import asyncio
 from collections import defaultdict, deque
 from datetime import datetime, timezone, timedelta
 import bcrypt
@@ -646,19 +647,36 @@ async def admin_2fa_enable(body: Dict[str, str], _admin: User = Depends(require_
         raise HTTPException(status_code=400, detail="Run /admin/auth/2fa/setup first")
     if not pyotp.TOTP(secret).verify(code, valid_window=1):
         raise HTTPException(status_code=401, detail="Invalid code")
+
+    # Encrypt TOTP secret at rest using the Vault cipher
+    encrypted_secret = vault_encrypt(secret)
+
+    # Generate 10 one-time recovery codes, store only hashes, return plain once
+    plain_codes = _generate_recovery_codes(10)
+    hashed_codes = [_hash_recovery_code(c) for c in plain_codes]
+
     await db.users.update_one(
         {"id": _admin.id},
-        {"$set": {"totp_secret": secret, "totp_enabled": True},
+        {"$set": {
+            "totp_secret": encrypted_secret,
+            "totp_enabled": True,
+            "totp_recovery_codes": hashed_codes,
+            "totp_recovery_generated_at": now_iso(),
+         },
          "$unset": {"totp_secret_pending": ""}}
     )
     await db.audit_log.insert_one({
         "id": str(uuid.uuid4()),
         "actor_id": _admin.id,
         "action": "admin.2fa.enabled",
-        "meta": {"email": _admin.email},
+        "meta": {"email": _admin.email, "recovery_codes_issued": len(plain_codes)},
         "created_at": now_iso(),
     })
-    return {"message": "2FA enabled for your account"}
+    return {
+        "message": "2FA enabled for your account",
+        "recovery_codes": plain_codes,
+        "recovery_codes_warning": "Save these codes in a secure place. They are shown only once and each works one time.",
+    }
 
 @api_router.post("/admin/auth/2fa/disable")
 async def admin_2fa_disable(body: Dict[str, str], _admin: User = Depends(require_admin)):
@@ -666,13 +684,14 @@ async def admin_2fa_disable(body: Dict[str, str], _admin: User = Depends(require
     user = await db.users.find_one({"id": _admin.id}, {"_id": 0, "totp_secret": 1, "totp_enabled": 1})
     if not (user or {}).get("totp_enabled"):
         raise HTTPException(status_code=400, detail="2FA is not enabled")
-    secret = (user or {}).get("totp_secret")
-    if not secret or not pyotp.TOTP(secret).verify(code, valid_window=1):
+    stored_secret = (user or {}).get("totp_secret")
+    plain_secret = vault_decrypt(stored_secret) if stored_secret else None
+    if not plain_secret or not pyotp.TOTP(plain_secret).verify(code, valid_window=1):
         raise HTTPException(status_code=401, detail="Invalid code")
     await db.users.update_one(
         {"id": _admin.id},
         {"$set": {"totp_enabled": False},
-         "$unset": {"totp_secret": "", "totp_secret_pending": ""}}
+         "$unset": {"totp_secret": "", "totp_secret_pending": "", "totp_recovery_codes": "", "totp_recovery_generated_at": ""}}
     )
     await db.audit_log.insert_one({
         "id": str(uuid.uuid4()),
@@ -682,6 +701,39 @@ async def admin_2fa_disable(body: Dict[str, str], _admin: User = Depends(require
         "created_at": now_iso(),
     })
     return {"message": "2FA disabled"}
+
+@api_router.post("/admin/auth/2fa/recovery-codes/regenerate")
+async def admin_2fa_regenerate_recovery_codes(body: Dict[str, str], _admin: User = Depends(require_admin)):
+    """Regenerate 10 fresh recovery codes. Requires a valid current TOTP code.
+    Old recovery codes are invalidated."""
+    code = (body.get("code") or "").strip()
+    user = await db.users.find_one({"id": _admin.id}, {"_id": 0, "totp_secret": 1, "totp_enabled": 1})
+    if not (user or {}).get("totp_enabled"):
+        raise HTTPException(status_code=400, detail="2FA is not enabled")
+    stored_secret = (user or {}).get("totp_secret")
+    plain_secret = vault_decrypt(stored_secret) if stored_secret else None
+    if not plain_secret or not pyotp.TOTP(plain_secret).verify(code, valid_window=1):
+        raise HTTPException(status_code=401, detail="Invalid code")
+
+    plain_codes = _generate_recovery_codes(10)
+    hashed_codes = [_hash_recovery_code(c) for c in plain_codes]
+    await db.users.update_one(
+        {"id": _admin.id},
+        {"$set": {"totp_recovery_codes": hashed_codes,
+                  "totp_recovery_generated_at": now_iso()}},
+    )
+    await db.audit_log.insert_one({
+        "id": str(uuid.uuid4()),
+        "actor_id": _admin.id,
+        "action": "admin.2fa.recovery_regenerated",
+        "meta": {"email": _admin.email, "count": len(plain_codes)},
+        "created_at": now_iso(),
+    })
+    return {
+        "message": "Recovery codes regenerated. Previous codes are invalid.",
+        "recovery_codes": plain_codes,
+        "recovery_codes_warning": "Save these codes in a secure place. They are shown only once and each works one time.",
+    }
 
 @api_router.get("/admin/auth/2fa/status")
 async def admin_2fa_status(_admin: User = Depends(require_admin)):
@@ -1888,7 +1940,7 @@ async def admin_system_health(_admin: User = Depends(require_admin)):
     ]
     uptime = int(time.time() - _APP_START_TIME)
     return {
-        "version": os.environ.get("APP_VERSION", "1.0.0"),
+        "version": os.environ.get("APP_VERSION", "1.4.0"),
         "uptime_seconds": uptime,
         "uptime_human": f"{uptime // 3600}h {(uptime % 3600) // 60}m {uptime % 60}s",
         "layers": layers,
@@ -1905,6 +1957,29 @@ async def admin_system_health(_admin: User = Depends(require_admin)):
         },
     }
 
+
+# Public health endpoints for k8s liveness / readiness probes (NO auth required).
+@api_router.get("/health")
+async def public_health():
+    """Liveness probe — always-green if the app process is up."""
+    return {"status": "ok", "version": os.environ.get("APP_VERSION", "1.4.0")}
+
+
+@api_router.get("/ready")
+async def public_ready():
+    """Readiness probe — returns 503 if any DB layer fails to respond."""
+    async def ping(dbh):
+        try:
+            await dbh.command("ping")
+            return True
+        except Exception:
+            return False
+    oks = await asyncio.gather(ping(db_identity), ping(db_streaming), ping(db_vault))
+    if not all(oks):
+        return JSONResponse(status_code=503, content={"status": "degraded",
+                                                       "identity": oks[0], "streaming": oks[1], "vault": oks[2]})
+    return {"status": "ready"}
+
 @api_router.post("/admin/system/reload-settings")
 async def admin_reload_settings(_admin: User = Depends(require_admin)):
     settings = await get_settings()
@@ -1917,7 +1992,7 @@ async def admin_reload_settings(_admin: User = Depends(require_admin)):
 @api_router.post("/admin/system/deploy-update")
 async def admin_deploy_update(_admin: User = Depends(require_admin)):
     """Triggers a system update event. In production this would call the deployment pipeline."""
-    version = os.environ.get("APP_VERSION", "1.0.0")
+    version = os.environ.get("APP_VERSION", "1.4.0")
     event = {
         "id": str(uuid.uuid4()),
         "type": "deploy.update",
@@ -1960,6 +2035,24 @@ async def admin_rotate_keys(_admin: User = Depends(require_admin)):
             await db.banking_info.update_one({"_id": row["_id"]}, {"$set": patch})
             rotated += 1
 
+    # Re-encrypt users.totp_secret (key-holder admin secrets) using old→new cipher
+    totp_rotated = 0
+    totp_failed = 0
+    async for u in db.users.find({"totp_secret": {"$exists": True, "$ne": None}}):
+        enc = u.get("totp_secret")
+        if not enc:
+            continue
+        try:
+            plain = old_cipher.decrypt(enc.encode()).decode()
+            new_enc = new_cipher.encrypt(plain.encode()).decode()
+            await db.users.update_one(
+                {"_id": u["_id"]},
+                {"$set": {"totp_secret": new_enc, "totp_key_rotated_at": now_iso()}},
+            )
+            totp_rotated += 1
+        except Exception:
+            totp_failed += 1
+
     # Swap active cipher in-process
     _vault_cipher = new_cipher
     _VAULT_KEY = new_key
@@ -1970,6 +2063,8 @@ async def admin_rotate_keys(_admin: User = Depends(require_admin)):
         "actor": _admin.id,
         "rotated_records": rotated,
         "failed_records": failed,
+        "totp_rotated": totp_rotated,
+        "totp_failed": totp_failed,
         "created_at": now_iso(),
     }
     await db.system_events.insert_one(event.copy())
@@ -1977,12 +2072,18 @@ async def admin_rotate_keys(_admin: User = Depends(require_admin)):
         "id": str(uuid.uuid4()),
         "actor_id": _admin.id,
         "action": "keys.rotate",
-        "meta": {"rotated": rotated, "failed": failed},
+        "meta": {"rotated": rotated, "failed": failed,
+                 "totp_rotated": totp_rotated, "totp_failed": totp_failed},
         "created_at": now_iso(),
     })
-    logger.info(f"Vault key rotated — {rotated} records re-encrypted, {failed} failures")
-    return {"message": f"Key rotated. {rotated} records re-encrypted, {failed} failed.",
+    logger.info(
+        "Vault key rotated — banking:%d/%d | totp:%d/%d",
+        rotated, failed, totp_rotated, totp_failed,
+    )
+    return {"message": (f"Key rotated. Banking: {rotated} re-encrypted ({failed} failed). "
+                        f"TOTP secrets: {totp_rotated} re-encrypted ({totp_failed} failed)."),
             "rotated": rotated, "failed": failed,
+            "totp_rotated": totp_rotated, "totp_failed": totp_failed,
             "warning": "Save the new VAULT_ENCRYPTION_KEY to your env before the next restart.",
             "new_key_preview": new_key[:12] + "...",
             "event": event}
@@ -2120,7 +2221,20 @@ class FirewallMiddleware(BaseHTTPMiddleware):
         return response
 
 
+class RequestIDMiddleware(BaseHTTPMiddleware):
+    """Adds an X-Request-ID header to every response (echoes the incoming one
+    when present, generates a UUID4 otherwise). Useful for correlating requests
+    across logs/tracing in k8s."""
+    async def dispatch(self, request: Request, call_next):
+        req_id = request.headers.get("x-request-id") or str(uuid.uuid4())
+        request.state.request_id = req_id
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = req_id
+        return response
+
+
 app.add_middleware(FirewallMiddleware)
+app.add_middleware(RequestIDMiddleware)
 
 app.add_middleware(
     CORSMiddleware,
@@ -2209,7 +2323,7 @@ async def startup_bootstrap():
     except Exception as e:
         logger.warning(f"Promo seed skipped: {e}")
 
-    logger.info(f"View/Clip v{os.environ.get('APP_VERSION', '1.0.0')} ready "
+    logger.info(f"View/Clip v{os.environ.get('APP_VERSION', '1.4.0')} ready "
                 f"| DBs: identity={_IDENTITY_DB_NAME} streaming={_STREAMING_DB_NAME} vault={_VAULT_DB_NAME}")
     logger.info(
         "Integrations — Stripe: %s | Live Stream: %s",

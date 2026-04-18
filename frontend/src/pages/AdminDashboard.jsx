@@ -7,7 +7,7 @@ import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Upload, LogOut, User as UserIcon, Home, Radio, Shield, Settings as SettingsIcon, Banknote, AlertTriangle, Megaphone, Users2, BarChart3, Trash2 } from 'lucide-react';
+import { Upload, LogOut, User as UserIcon, Home, Radio, Shield, Settings as SettingsIcon, Banknote, AlertTriangle, Megaphone, Users2, BarChart3, Trash2, Copy, Download, RefreshCcw, KeyRound } from 'lucide-react';
 import Logo from '@/components/Logo';
 import NotificationBell from '@/components/NotificationBell';
 import axios from 'axios';
@@ -529,6 +529,9 @@ const TwoFactorCard = () => {
   const [status, setStatus] = useState(null);
   const [setupData, setSetupData] = useState(null);
   const [code, setCode] = useState('');
+  const [recoveryCodes, setRecoveryCodes] = useState(null); // shown ONCE after enable/regenerate
+  const [regenMode, setRegenMode] = useState(false);
+  const [regenCode, setRegenCode] = useState('');
 
   const refresh = async () => {
     try { const r = await axios.get(`${API}/admin/auth/2fa/status`); setStatus(r.data); }
@@ -541,17 +544,80 @@ const TwoFactorCard = () => {
     catch (e) { toast.error('Setup failed'); }
   };
   const enable = async () => {
-    try { await axios.post(`${API}/admin/auth/2fa/enable`, { code }); toast.success('2FA enabled'); setSetupData(null); setCode(''); refresh(); }
+    try {
+      const r = await axios.post(`${API}/admin/auth/2fa/enable`, { code });
+      toast.success('2FA enabled');
+      setRecoveryCodes(r.data.recovery_codes || []);
+      setSetupData(null);
+      setCode('');
+      refresh();
+    }
     catch (e) { toast.error(e.response?.data?.detail || 'Invalid code'); }
   };
   const disable = async () => {
     const c = window.prompt('Enter current 6-digit code to disable 2FA:');
     if (!c) return;
-    try { await axios.post(`${API}/admin/auth/2fa/disable`, { code: c }); toast.success('2FA disabled'); refresh(); }
+    try { await axios.post(`${API}/admin/auth/2fa/disable`, { code: c }); toast.success('2FA disabled'); setRecoveryCodes(null); refresh(); }
     catch (e) { toast.error(e.response?.data?.detail || 'Failed'); }
+  };
+  const regenerate = async () => {
+    try {
+      const r = await axios.post(`${API}/admin/auth/2fa/recovery-codes/regenerate`, { code: regenCode });
+      setRecoveryCodes(r.data.recovery_codes || []);
+      setRegenMode(false);
+      setRegenCode('');
+      toast.success('New recovery codes issued');
+    } catch (e) { toast.error(e.response?.data?.detail || 'Invalid code'); }
+  };
+
+  const copyCodes = () => {
+    if (!recoveryCodes) return;
+    navigator.clipboard.writeText(recoveryCodes.join('\n'));
+    toast.success('Recovery codes copied');
+  };
+  const downloadCodes = () => {
+    if (!recoveryCodes) return;
+    const blob = new Blob(
+      [`View/Clip — Admin Recovery Codes\nGenerated: ${new Date().toISOString()}\n\n` + recoveryCodes.join('\n') + '\n'],
+      { type: 'text/plain' }
+    );
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = 'viewclip-recovery-codes.txt'; a.click();
+    URL.revokeObjectURL(url);
   };
 
   if (!status) return null;
+
+  // Recovery codes overlay — shown once after enable/regenerate
+  if (recoveryCodes) {
+    return (
+      <div data-testid="twofa-recovery-card" className="glass-panel rounded-xl p-6 border border-amber-500/40">
+        <h3 className="text-lg font-bold mb-2 flex items-center gap-2 text-amber-300">
+          <KeyRound className="w-5 h-5" /> Save your recovery codes
+        </h3>
+        <p className="text-amber-200/80 text-sm mb-4">
+          Each code works <strong>once</strong>. They are shown <strong>only now</strong>. If you lose your authenticator and these codes, you will be locked out.
+        </p>
+        <div data-testid="twofa-recovery-codes-list" className="grid grid-cols-2 gap-2 font-mono text-sm bg-black/40 rounded-lg p-4 border border-white/5">
+          {recoveryCodes.map((c, i) => (
+            <div key={i} className="text-cyan-300 tracking-wider">{c}</div>
+          ))}
+        </div>
+        <div className="flex flex-wrap gap-2 mt-4">
+          <Button data-testid="twofa-recovery-copy-btn" onClick={copyCodes} className="bg-white/10 hover:bg-white/20">
+            <Copy className="w-4 h-4 mr-2" /> Copy
+          </Button>
+          <Button data-testid="twofa-recovery-download-btn" onClick={downloadCodes} className="bg-white/10 hover:bg-white/20">
+            <Download className="w-4 h-4 mr-2" /> Download .txt
+          </Button>
+          <Button data-testid="twofa-recovery-done-btn" onClick={() => setRecoveryCodes(null)} className="bg-green-500 hover:bg-green-600 ml-auto">
+            I've saved them
+          </Button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div data-testid="twofa-card" className="glass-panel rounded-xl p-6 border border-fuchsia-500/20">
@@ -560,15 +626,42 @@ const TwoFactorCard = () => {
         Two-Factor Authentication (TOTP)
       </h3>
       <p className="text-gray-400 text-sm mb-4">
-        Add a second factor to your staff account. Works with Google Authenticator, 1Password, Authy, etc.
+        Add a second factor to your staff account. Works with Google Authenticator, 1Password, Authy, etc. Recovery codes are issued on enable.
       </p>
 
       {status.enabled ? (
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2 text-green-400">
-            <span className="w-2 h-2 rounded-full bg-green-400"></span>2FA is enabled on your account
+        <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2 text-green-400">
+              <span className="w-2 h-2 rounded-full bg-green-400"></span>2FA is enabled on your account
+            </div>
+            <div className="flex gap-2">
+              <Button data-testid="twofa-regenerate-btn" onClick={() => setRegenMode((v) => !v)} className="bg-amber-500/80 hover:bg-amber-600 text-black">
+                <RefreshCcw className="w-4 h-4 mr-1" /> Regenerate recovery codes
+              </Button>
+              <Button data-testid="twofa-disable-btn" onClick={disable} className="bg-red-500/80 hover:bg-red-600 text-white">Disable</Button>
+            </div>
           </div>
-          <Button data-testid="twofa-disable-btn" onClick={disable} className="bg-red-500/80 hover:bg-red-600 text-white">Disable</Button>
+          {regenMode && (
+            <div data-testid="twofa-regen-panel" className="bg-black/30 border border-amber-500/30 rounded-lg p-4 space-y-3">
+              <div className="text-sm text-amber-200">Enter your current 6-digit code to issue 10 fresh recovery codes (old ones will be invalidated).</div>
+              <Input
+                data-testid="twofa-regen-code-input"
+                value={regenCode}
+                onChange={(e) => setRegenCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                inputMode="numeric"
+                maxLength={6}
+                className="bg-white/5 border-white/10 text-white font-mono text-center text-xl tracking-[0.4em]"
+                placeholder="000000"
+              />
+              <div className="flex gap-2">
+                <Button data-testid="twofa-regen-confirm-btn" onClick={regenerate} disabled={regenCode.length !== 6}
+                  className="bg-amber-500 hover:bg-amber-600 text-black">Issue new codes</Button>
+                <Button onClick={() => { setRegenMode(false); setRegenCode(''); }}
+                  className="bg-white/5 hover:bg-white/10 text-white">Cancel</Button>
+              </div>
+            </div>
+          )}
         </div>
       ) : setupData ? (
         <div className="grid md:grid-cols-2 gap-4">

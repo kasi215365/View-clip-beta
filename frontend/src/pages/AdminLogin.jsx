@@ -136,29 +136,32 @@ const AdminLogin = () => {
             <form onSubmit={submitTotp} className="space-y-4" data-testid="admin-totp-step">
               <div className="text-center mb-4">
                 <div className="text-xs text-fuchsia-300 tracking-wider uppercase mb-2">Two-Factor Authentication</div>
-                <p className="text-gray-400 text-sm">Enter the 6-digit code from your authenticator app.</p>
+                <p className="text-gray-400 text-sm">Enter the 6-digit code from your authenticator app, or a recovery code.</p>
               </div>
               <Input
                 data-testid="admin-totp-code-input"
                 type="text"
                 value={totpCode}
-                onChange={(e) => setTotpCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                onChange={(e) => setTotpCode(e.target.value.slice(0, 20))}
                 required
-                inputMode="numeric"
+                inputMode="text"
                 autoComplete="one-time-code"
-                maxLength={6}
-                className="bg-black/40 border-fuchsia-500/20 text-white placeholder:text-gray-600 font-mono text-center text-2xl tracking-[0.5em] py-6"
-                placeholder="000000"
+                maxLength={20}
+                className="bg-black/40 border-fuchsia-500/20 text-white placeholder:text-gray-600 font-mono text-center text-xl tracking-[0.3em] py-6 uppercase"
+                placeholder="000000  or  XXXX-XXXX-XXXX"
                 autoFocus
               />
               <Button
                 data-testid="admin-totp-submit-btn"
                 type="submit"
-                disabled={loading || totpCode.length !== 6}
+                disabled={loading || totpCode.trim().length < 6}
                 className="w-full bg-gradient-to-r from-fuchsia-500 to-cyan-400 hover:opacity-90 rounded-lg py-6 font-bold tracking-wider uppercase text-[#030509]"
               >
                 {loading ? 'Verifying…' : 'Verify & Enter'}
               </Button>
+              <p className="text-[11px] text-gray-500 text-center">
+                Lost your device? Paste one of your <span className="text-fuchsia-400">recovery codes</span> — each works once.
+              </p>
               <button
                 type="button"
                 data-testid="admin-totp-back-btn"

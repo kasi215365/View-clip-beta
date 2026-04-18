@@ -2,7 +2,7 @@ import { useEffect, useState, useContext } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { AuthContext, API } from '@/App';
 import { Button } from '@/components/ui/button';
-import { Bell, Home, Radio, User as UserIcon, LogOut, CheckCheck, Gift, UserPlus, Radio as LiveIcon, Trophy } from 'lucide-react';
+import { Bell, Home, Radio, User as UserIcon, LogOut, CheckCheck, Gift, UserPlus, Radio as LiveIcon, Trophy, ShieldAlert } from 'lucide-react';
 import Logo from '@/components/Logo';
 import axios from 'axios';
 import { toast } from 'sonner';
@@ -12,6 +12,7 @@ const icon = (type) => {
   if (type === 'new_follower') return <UserPlus className="w-5 h-5 text-cyan-400" />;
   if (type === 'stream_live') return <LiveIcon className="w-5 h-5 text-red-400" />;
   if (type === 'referral') return <Trophy className="w-5 h-5 text-amber-400" />;
+  if (type === 'security_anomaly') return <ShieldAlert className="w-5 h-5 text-red-500" />;
   return <Bell className="w-5 h-5 text-gray-400" />;
 };
 
