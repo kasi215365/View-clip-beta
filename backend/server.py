@@ -431,6 +431,46 @@ async def login(credentials: UserLogin):
 async def get_me(current_user: User = Depends(get_current_user)):
     return current_user
 
+@api_router.post("/admin/auth/login")
+async def admin_login(credentials: UserLogin, request: Request):
+    """Dedicated staff-portal login. Admin role required. Every attempt is audited."""
+    user = await db.users.find_one({"email": credentials.email})
+    client_ip = request.client.host if request.client else "unknown"
+
+    if not user or not verify_password(credentials.password, user['password_hash']):
+        await db.audit_log.insert_one({
+            "id": str(uuid.uuid4()),
+            "actor_id": None,
+            "action": "admin.auth.failed",
+            "meta": {"email": credentials.email, "reason": "bad_credentials", "ip": client_ip},
+            "created_at": now_iso(),
+        })
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    if user.get("role") != "admin":
+        await db.audit_log.insert_one({
+            "id": str(uuid.uuid4()),
+            "actor_id": user["id"],
+            "action": "admin.auth.denied",
+            "meta": {"email": credentials.email, "reason": "not_admin", "ip": client_ip},
+            "created_at": now_iso(),
+        })
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    token = create_token(user['id'], user['email'], user['role'])
+    payload = {k: v for k, v in user.items() if k not in ['_id', 'password_hash']}
+    payload.setdefault("gift_wallet", {})
+    payload.setdefault("connect_account_status", "not_onboarded")
+
+    await db.audit_log.insert_one({
+        "id": str(uuid.uuid4()),
+        "actor_id": user["id"],
+        "action": "admin.auth.success",
+        "meta": {"email": user["email"], "ip": client_ip},
+        "created_at": now_iso(),
+    })
+    return {"token": token, "user": User(**payload), "portal": "staff"}
+
 # =============================================================================
 # CONTENT
 # =============================================================================

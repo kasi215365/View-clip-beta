@@ -14,6 +14,7 @@ import Profile from "@/pages/Profile";
 import PaymentSuccess from "@/pages/PaymentSuccess";
 import Leaderboard from "@/pages/Leaderboard";
 import Notifications from "@/pages/Notifications";
+import AdminLogin from "@/pages/AdminLogin";
 import { Toaster } from "@/components/ui/sonner";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
@@ -79,7 +80,8 @@ function App() {
             <Route path="/live" element={user ? <LiveStreams /> : <Navigate to="/auth" />} />
             <Route path="/stream/:id" element={user ? <StreamView /> : <Navigate to="/auth" />} />
             <Route path="/streamer" element={user && (user.role === 'streamer' || user.role === 'admin') ? <StreamerDashboard /> : <Navigate to="/browse" />} />
-            <Route path="/admin" element={user && user.role === 'admin' ? <AdminDashboard /> : <Navigate to="/browse" />} />
+            <Route path="/admin/login" element={user && user.role === 'admin' ? <Navigate to="/admin" /> : <AdminLogin />} />
+            <Route path="/admin" element={user && user.role === 'admin' ? <AdminDashboard /> : <Navigate to="/admin/login" />} />
             <Route path="/profile" element={user ? <Profile /> : <Navigate to="/auth" />} />
             <Route path="/payment-success" element={user ? <PaymentSuccess /> : <Navigate to="/auth" />} />
             <Route path="/leaderboard" element={<Leaderboard />} />
