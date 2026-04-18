@@ -26,6 +26,12 @@ A hybrid VOD + Live Streaming platform (Hulu/ESPN meets Twitch/Bigo-Live) brande
 
 ## Implemented (CHANGELOG)
 
+### 2026-02 (phase 5) — Admin security hardening
+- **TOTP 2FA** on admin login — `pyotp` + `qrcode` based; setup returns QR PNG + manual secret; `/api/admin/auth/login` returns `{require_2fa: true}` when code missing; verify step issues token. Setup/enable/disable/failed-code events all audit-logged.
+- **Admin Command Center → System → Two-Factor Authentication card** — scan-QR setup flow, enable/disable buttons, status indicator.
+- **AdminLogin two-step UI** — creds step → TOTP step when 2FA is enabled; back button; 6-digit numeric input with auto-trim.
+- **`ADMIN_IP_ALLOWLIST` env var** — comma-separated IPs/CIDRs enforced at firewall middleware for every `/api/admin/*` path (including the login endpoint). Blocked attempts return 403 + write `admin.ip.blocked` audit entry. Admin health endpoint exposes `admin_ip_allowlist_enabled` + count.
+
 ### 2026-02 (phase 4) — Production integrations with graceful fallback
 - **Real Stripe Connect Express** (`stripe_service.create_connect_account`, `create_onboarding_link`, `retrieve_account`, `transfer_to_connect`) — activates automatically when `STRIPE_API_KEY` is a real test/live key. Falls back to mock onboarding when placeholder `sk_test_emergent` is set.
 - **Real recurring Stripe Subscriptions** (`stripe_service.ensure_subscription_price` auto-creates Product/Price, `create_subscription_checkout` uses `mode='subscription'`, `cancel_subscription` supports `cancel_at_period_end`). Webhook processes `customer.subscription.updated/deleted`, `invoice.paid`, `account.updated`. Falls back to one-time emergentintegrations Checkout (30-day mock) when real key missing.
