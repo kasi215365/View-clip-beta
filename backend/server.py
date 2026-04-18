@@ -1904,6 +1904,11 @@ async def startup_bootstrap():
 
     logger.info(f"View/Clip v{os.environ.get('APP_VERSION', '1.0.0')} ready "
                 f"| DBs: identity={_IDENTITY_DB_NAME} streaming={_STREAMING_DB_NAME} vault={_VAULT_DB_NAME}")
+    logger.info(
+        "Integrations — Stripe: %s | Live Stream: %s",
+        "REAL" if stripe_service.real_stripe_enabled() else "MOCK (set STRIPE_API_KEY to real sk_test_/sk_live_ key to activate)",
+        "REAL (GCP)" if live_stream_service.is_live_enabled() else "MOCK (set GOOGLE_CLOUD_PROJECT + LIVESTREAM_GCS_BUCKET + GOOGLE_SERVICE_ACCOUNT_JSON/GOOGLE_APPLICATION_CREDENTIALS to activate)",
+    )
 
 
 @app.on_event("shutdown")

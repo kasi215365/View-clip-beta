@@ -1,10 +1,14 @@
 """Google Cloud Live Stream API service.
 Graceful fallback: if credentials are missing, returns mock URLs so the app
-works out-of-the-box. When `GOOGLE_APPLICATION_CREDENTIALS` + `GOOGLE_CLOUD_PROJECT`
-+ `LIVESTREAM_GCS_BUCKET` are set, real provisioning is activated automatically.
+works out-of-the-box. When `GOOGLE_CLOUD_PROJECT` + `LIVESTREAM_GCS_BUCKET`
++ credentials (either `GOOGLE_APPLICATION_CREDENTIALS` path OR
+`GOOGLE_SERVICE_ACCOUNT_JSON` inline JSON) are set, real provisioning is
+activated automatically.
 """
 import os
+import json
 import logging
+import tempfile
 import uuid
 from typing import Dict, Any, Optional
 
@@ -14,6 +18,20 @@ PROJECT_ID = os.environ.get("GOOGLE_CLOUD_PROJECT", "").strip()
 LOCATION = os.environ.get("LIVESTREAM_LOCATION", "us-central1")
 GCS_BUCKET = os.environ.get("LIVESTREAM_GCS_BUCKET", "").strip()
 CREDS_PATH = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
+_INLINE_JSON = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
+
+# If caller pasted JSON inline, materialise it to a temp file and export the path.
+if _INLINE_JSON and not CREDS_PATH:
+    try:
+        parsed = json.loads(_INLINE_JSON)
+        tmp = tempfile.NamedTemporaryFile(prefix="gcp-sa-", suffix=".json", delete=False, mode="w")
+        json.dump(parsed, tmp)
+        tmp.close()
+        CREDS_PATH = tmp.name
+        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = CREDS_PATH
+        logger.info("GCP service account JSON materialised from env at %s", CREDS_PATH)
+    except Exception as e:
+        logger.warning("GOOGLE_SERVICE_ACCOUNT_JSON parse failed: %s", e)
 
 _live_client = None
 
