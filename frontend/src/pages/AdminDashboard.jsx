@@ -153,12 +153,13 @@ const AdminDashboard = () => {
           )}
 
           <Tabs defaultValue="settings" className="w-full">
-            <TabsList className="grid w-full grid-cols-5 bg-white/5 mb-6">
+            <TabsList className="grid w-full grid-cols-6 bg-white/5 mb-6">
               <TabsTrigger data-testid="tab-settings" value="settings"><SettingsIcon className="w-4 h-4 mr-2" />Settings</TabsTrigger>
               <TabsTrigger data-testid="tab-content" value="content"><Upload className="w-4 h-4 mr-2" />Content</TabsTrigger>
               <TabsTrigger data-testid="tab-promos" value="promos"><Megaphone className="w-4 h-4 mr-2" />Promos</TabsTrigger>
               <TabsTrigger data-testid="tab-users" value="users"><Users2 className="w-4 h-4 mr-2" />Users</TabsTrigger>
               <TabsTrigger data-testid="tab-payouts" value="payouts"><Banknote className="w-4 h-4 mr-2" />Payouts</TabsTrigger>
+              <TabsTrigger data-testid="tab-system" value="system"><Shield className="w-4 h-4 mr-2" />System</TabsTrigger>
             </TabsList>
 
             {/* SETTINGS */}
@@ -326,6 +327,11 @@ const AdminDashboard = () => {
                 </div>
               </div>
             </TabsContent>
+
+            {/* SYSTEM — L3 firewall, 3-DB health, hot-swap providers, deploy */}
+            <TabsContent value="system">
+              <SystemPanel />
+            </TabsContent>
           </Tabs>
         </div>
       </div>
@@ -358,5 +364,162 @@ const SettingRow = ({ label, children, testid }) => (
     <div className="mt-1">{children}</div>
   </div>
 );
+
+const SystemPanel = () => {
+  const [health, setHealth] = useState(null);
+  const [providers, setProviders] = useState(null);
+  const [events, setEvents] = useState([]);
+  const [audit, setAudit] = useState([]);
+  const [busy, setBusy] = useState(false);
+
+  const refresh = async () => {
+    try {
+      const [h, p, e, a] = await Promise.all([
+        axios.get(`${API}/admin/system/health`),
+        axios.get(`${API}/admin/streaming/providers`),
+        axios.get(`${API}/admin/system/events`),
+        axios.get(`${API}/admin/audit`),
+      ]);
+      setHealth(h.data);
+      setProviders(p.data);
+      setEvents(e.data.events || []);
+      setAudit(a.data.audit || []);
+    } catch (err) { /* noop */ }
+  };
+
+  useEffect(() => {
+    refresh();
+    const iv = setInterval(refresh, 15000);
+    return () => clearInterval(iv);
+  }, []);
+
+  const action = async (label, url) => {
+    setBusy(true);
+    try {
+      const r = await axios.post(url);
+      toast.success(r.data.message || label);
+      refresh();
+    } catch (e) { toast.error('Action failed'); }
+    setBusy(false);
+  };
+
+  const switchProvider = async (id) => {
+    try {
+      const r = await axios.post(`${API}/admin/streaming/providers/switch`, { provider_id: id });
+      toast.success(r.data.message);
+      refresh();
+    } catch (e) { toast.error('Switch failed'); }
+  };
+
+  return (
+    <div className="space-y-6">
+      {/* Health grid */}
+      {health && (
+        <div data-testid="system-health" className="grid lg:grid-cols-2 gap-6">
+          <div className="glass-panel rounded-xl p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-bold flex items-center"><Shield className="w-5 h-5 mr-2 text-green-400" />System Health</h3>
+              <span className="text-xs text-gray-500">v{health.version} · {health.uptime_human}</span>
+            </div>
+            <div className="space-y-2">
+              {health.layers.map((l) => (
+                <div key={l.layer} data-testid={`layer-${l.layer}`} className="flex items-center justify-between bg-white/5 rounded px-3 py-2">
+                  <div className="flex items-center gap-2">
+                    <span className={`w-2 h-2 rounded-full ${l.status === 'ok' ? 'bg-green-400' : 'bg-red-400'}`}></span>
+                    <span className="capitalize">{l.layer} DB</span>
+                  </div>
+                  <span className="text-xs text-gray-400">{l.latency_ms ?? '-'} ms</span>
+                </div>
+              ))}
+            </div>
+            <div className="grid grid-cols-3 gap-2 mt-4 text-center">
+              <div className="bg-white/5 rounded p-2"><div className="text-xs text-gray-400">Requests</div><div className="font-bold">{health.requests.total}</div></div>
+              <div className="bg-white/5 rounded p-2"><div className="text-xs text-gray-400">Blocked</div><div className="font-bold text-red-400">{health.firewall.blocked_requests}</div></div>
+              <div className="bg-white/5 rounded p-2"><div className="text-xs text-gray-400">Rate/min</div><div className="font-bold">{health.firewall.rate_limit_per_min}</div></div>
+            </div>
+          </div>
+          <div className="glass-panel rounded-xl p-6">
+            <h3 className="text-lg font-bold mb-3">Encryption</h3>
+            <div className="bg-white/5 rounded p-3 text-sm">
+              <div className="text-xs text-gray-400 mb-1">Algorithm</div>
+              <div className="font-mono text-green-400 mb-2">{health.encryption.algorithm}</div>
+              <div className="text-xs text-gray-400 mb-1">Vault Key</div>
+              <div className="font-mono text-xs">{health.encryption.vault_key_configured ? '✓ Loaded' : '✗ Missing'}</div>
+            </div>
+            <div className="mt-4">
+              <div className="text-sm text-gray-400 mb-2">Top Paths</div>
+              <div className="space-y-1">
+                {health.requests.top_paths.slice(0, 5).map((p, i) => (
+                  <div key={i} className="flex justify-between text-xs"><span className="font-mono text-gray-400 truncate">{p[0]}</span><span className="text-cyan-400">{p[1]}</span></div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Streaming providers hot-swap */}
+      {providers && (
+        <div data-testid="streaming-providers" className="glass-panel rounded-xl p-6">
+          <h3 className="text-lg font-bold mb-3">Cloud Streaming Provider (hot-swap)</h3>
+          <p className="text-gray-400 text-sm mb-4">Swap the live-video backend without redeploying. Metadata switch applies immediately; activation requires provider env vars.</p>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            {providers.providers.map((p) => (
+              <button key={p.id} data-testid={`provider-${p.id}`} onClick={() => switchProvider(p.id)}
+                className={`rounded-xl p-4 text-left transition-all border-2 ${providers.current === p.id ? 'border-green-400 bg-green-400/10' : 'border-white/10 hover:border-cyan-400/40'}`}>
+                <div className="font-semibold">{p.name}</div>
+                <div className="text-xs text-gray-500 mt-1">{providers.current === p.id ? 'Active' : 'Switch to'}</div>
+                {p.requires.length > 0 && <div className="text-[10px] text-gray-500 mt-2 font-mono truncate">needs: {p.requires.join(', ')}</div>}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* System actions */}
+      <div data-testid="system-actions" className="glass-panel rounded-xl p-6">
+        <h3 className="text-lg font-bold mb-4">System Actions</h3>
+        <div className="grid md:grid-cols-3 gap-3">
+          <Button data-testid="reload-settings-btn" disabled={busy} onClick={() => action('Reload', `${API}/admin/system/reload-settings`)} className="bg-cyan-400 text-[#05070F] hover:bg-cyan-300 py-6">
+            <SettingsIcon className="w-4 h-4 mr-2" />Reload Settings
+          </Button>
+          <Button data-testid="deploy-update-btn" disabled={busy} onClick={() => action('Deploy', `${API}/admin/system/deploy-update`)} className="bg-fuchsia-500 hover:bg-fuchsia-600 py-6">
+            <Upload className="w-4 h-4 mr-2" />Deploy Update
+          </Button>
+          <Button data-testid="rotate-keys-btn" disabled={busy} onClick={() => action('Rotate', `${API}/admin/system/rotate-keys`)} className="bg-amber-500 hover:bg-amber-600 text-[#05070F] py-6">
+            <Shield className="w-4 h-4 mr-2" />Rotate Keys
+          </Button>
+        </div>
+      </div>
+
+      {/* Events + Audit */}
+      <div className="grid lg:grid-cols-2 gap-6">
+        <div data-testid="system-events" className="glass-panel rounded-xl p-6">
+          <h3 className="text-lg font-bold mb-3">System Events</h3>
+          <div className="space-y-1 max-h-80 overflow-y-auto">
+            {events.slice(0, 20).map((e) => (
+              <div key={e.id} className="text-sm bg-white/5 rounded px-3 py-2">
+                <div className="flex justify-between"><span className="font-mono text-cyan-400">{e.type}</span><span className="text-xs text-gray-500">{new Date(e.created_at).toLocaleString()}</span></div>
+                {e.version && <div className="text-xs text-gray-400">v{e.version}</div>}
+              </div>
+            ))}
+            {events.length === 0 && <p className="text-gray-500 text-sm">No events yet</p>}
+          </div>
+        </div>
+        <div data-testid="audit-log" className="glass-panel rounded-xl p-6">
+          <h3 className="text-lg font-bold mb-3">Audit Log</h3>
+          <div className="space-y-1 max-h-80 overflow-y-auto">
+            {audit.slice(0, 20).map((a) => (
+              <div key={a.id} className="text-sm bg-white/5 rounded px-3 py-2">
+                <div className="flex justify-between"><span className="font-mono text-fuchsia-400">{a.action}</span><span className="text-xs text-gray-500">{new Date(a.created_at).toLocaleString()}</span></div>
+              </div>
+            ))}
+            {audit.length === 0 && <p className="text-gray-500 text-sm">No audit entries</p>}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
 
 export default AdminDashboard;

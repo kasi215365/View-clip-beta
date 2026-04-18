@@ -180,6 +180,28 @@ const Browse = () => {
             </div>
           )}
 
+          {/* View/Clip Originals — self-promotion hero */}
+          {!searchResults && promos.length > 0 && (
+            <div data-testid="originals-hero" className="mb-8 relative rounded-2xl overflow-hidden glass-panel border-fuchsia-500/30">
+              <div className="absolute inset-0">
+                <img src={promos[0].thumbnail_url} alt="" className="w-full h-full object-cover opacity-30" onError={(e) => e.target.style.display = 'none'} />
+                <div className="absolute inset-0 bg-gradient-to-r from-[#05070F] via-[#05070F]/80 to-transparent"></div>
+              </div>
+              <div className="relative p-8 md:p-12">
+                <div className="inline-flex items-center gap-2 bg-fuchsia-500/20 text-fuchsia-300 px-3 py-1 rounded-full text-xs font-semibold mb-3">
+                  <Megaphone className="w-3 h-3" />VIEW/CLIP ORIGINALS
+                </div>
+                <h2 className="text-3xl md:text-4xl font-bold mb-2">{promos[0].title}</h2>
+                <p className="text-gray-400 max-w-xl mb-4">{promos[0].description}</p>
+                <div className="flex gap-2 flex-wrap">
+                  {promos.slice(0, 4).map((p) => (
+                    <span key={p.id} data-testid={`hero-pill-${p.id}`} className="bg-white/5 px-3 py-1 rounded-full text-xs text-gray-300">{p.title.slice(0, 28)}{p.title.length > 28 ? '…' : ''}</span>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
           {!searchResults && trending.content.length > 0 && (
             <div data-testid="trending-strip" className="mb-8">
               <div className="flex items-center gap-2 mb-4">

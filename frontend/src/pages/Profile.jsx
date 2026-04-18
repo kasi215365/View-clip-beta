@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { AuthContext, API } from '@/App';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
-import { User as UserIcon, CreditCard, CheckCircle, XCircle, LogOut, Home, Radio, Wallet, Gift as GiftIcon, Banknote, Trophy, Copy } from 'lucide-react';
+import { User as UserIcon, CreditCard, CheckCircle, XCircle, LogOut, Home, Radio, Wallet, Gift as GiftIcon, Banknote, Trophy, Copy, Shield } from 'lucide-react';
 import Logo from '@/components/Logo';
 import NotificationBell from '@/components/NotificationBell';
 import axios from 'axios';
@@ -16,6 +16,9 @@ const Profile = () => {
   const [tiers, setTiers] = useState([]);
   const [wallet, setWallet] = useState({});
   const [referral, setReferral] = useState(null);
+  const [banking, setBanking] = useState(null);
+  const [bankForm, setBankForm] = useState({ account_holder: '', account_number: '', routing_number: '', bank_name: '', country: 'US' });
+  const [bankOpen, setBankOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [isBundleOpen, setIsBundleOpen] = useState(false);
@@ -24,21 +27,34 @@ const Profile = () => {
   useEffect(() => {
     (async () => {
       try {
-        const [sub, t, w, ref] = await Promise.all([
+        const [sub, t, w, ref, bank] = await Promise.all([
           axios.get(`${API}/subscriptions/status`),
           axios.get(`${API}/gifts/tiers`),
           axios.get(`${API}/gifts/wallet`),
           axios.get(`${API}/referrals/my`),
+          axios.get(`${API}/vault/banking`),
         ]);
         if (sub.data.has_subscription) setSubscription(sub.data.subscription);
         setTiers(t.data.tiers || []);
         setWallet(w.data.wallet || {});
         setReferral(ref.data);
+        setBanking(bank.data);
       } catch (e) {
         console.error(e);
       }
     })();
   }, []);
+
+  const saveBanking = async () => {
+    try {
+      await axios.post(`${API}/vault/banking`, bankForm);
+      toast.success('Banking info encrypted & saved');
+      setBankOpen(false);
+      const r = await axios.get(`${API}/vault/banking`);
+      setBanking(r.data);
+      setBankForm({ account_holder: '', account_number: '', routing_number: '', bank_name: '', country: 'US' });
+    } catch (e) { toast.error('Failed to save'); }
+  };
 
   const copyReferralLink = () => {
     if (!referral) return;
@@ -315,6 +331,45 @@ const Profile = () => {
               )}
             </div>
           )}
+
+          {/* Banking / Vault — AES-encrypted */}
+          <div data-testid="banking-card" className="glass-panel rounded-xl p-8 mb-8 border-green-400/20">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-2xl font-bold flex items-center">
+                <Shield className="w-6 h-6 mr-3 text-green-400" />Banking — Vault
+              </h2>
+              {banking?.configured ? (
+                <span className="text-xs bg-green-500/20 text-green-300 px-3 py-1 rounded-full">AES-encrypted · on file</span>
+              ) : (
+                <span className="text-xs bg-white/5 text-gray-400 px-3 py-1 rounded-full">Not configured</span>
+              )}
+            </div>
+            <p className="text-gray-400 text-sm mb-4">Stored in the isolated Vault DB with AES-128 field-level encryption. Only masked values are ever returned.</p>
+            {banking?.configured ? (
+              <div className="grid md:grid-cols-2 gap-3 mb-4">
+                <div className="bg-white/5 rounded-lg p-3"><div className="text-xs text-gray-400">Bank</div><div className="font-semibold">{banking.bank_name}</div></div>
+                <div className="bg-white/5 rounded-lg p-3"><div className="text-xs text-gray-400">Account Holder</div><div className="font-semibold">{banking.account_holder}</div></div>
+                <div className="bg-white/5 rounded-lg p-3"><div className="text-xs text-gray-400">Account #</div><div className="font-mono">{banking.account_number_masked}</div></div>
+                <div className="bg-white/5 rounded-lg p-3"><div className="text-xs text-gray-400">Routing #</div><div className="font-mono">{banking.routing_number_masked}</div></div>
+              </div>
+            ) : null}
+            <Dialog open={bankOpen} onOpenChange={setBankOpen}>
+              <DialogTrigger asChild>
+                <Button data-testid="edit-banking-btn" className="bg-green-500 hover:bg-green-600">{banking?.configured ? 'Update' : 'Add'} Banking Info</Button>
+              </DialogTrigger>
+              <DialogContent className="bg-[#0A0E27] border-white/10 text-white">
+                <DialogHeader><DialogTitle className="text-xl">Banking Info (encrypted)</DialogTitle></DialogHeader>
+                <div className="space-y-3 mt-4">
+                  <input data-testid="bank-holder-input" placeholder="Account Holder" value={bankForm.account_holder} onChange={(e) => setBankForm({ ...bankForm, account_holder: e.target.value })} className="w-full bg-white/5 border border-white/10 rounded px-3 py-2 text-white" />
+                  <input data-testid="bank-name-input" placeholder="Bank Name" value={bankForm.bank_name} onChange={(e) => setBankForm({ ...bankForm, bank_name: e.target.value })} className="w-full bg-white/5 border border-white/10 rounded px-3 py-2 text-white" />
+                  <input data-testid="bank-account-input" placeholder="Account Number" value={bankForm.account_number} onChange={(e) => setBankForm({ ...bankForm, account_number: e.target.value })} className="w-full bg-white/5 border border-white/10 rounded px-3 py-2 text-white font-mono" />
+                  <input data-testid="bank-routing-input" placeholder="Routing Number" value={bankForm.routing_number} onChange={(e) => setBankForm({ ...bankForm, routing_number: e.target.value })} className="w-full bg-white/5 border border-white/10 rounded px-3 py-2 text-white font-mono" />
+                  <input data-testid="bank-country-input" placeholder="Country (ISO)" value={bankForm.country} onChange={(e) => setBankForm({ ...bankForm, country: e.target.value.toUpperCase() })} maxLength={2} className="w-full bg-white/5 border border-white/10 rounded px-3 py-2 text-white font-mono" />
+                  <Button data-testid="save-banking-btn" onClick={saveBanking} className="w-full bg-green-500 hover:bg-green-600 py-6 font-semibold">Save (encrypted)</Button>
+                </div>
+              </DialogContent>
+            </Dialog>
+          </div>
 
           {/* Rates */}
           <div className="glass-panel rounded-xl p-8">
