@@ -284,6 +284,16 @@ const StreamerDashboard = () => {
                         <div className="flex items-center"><Eye className="w-4 h-4 mr-1" />{stream.views} views</div>
                         {stream.is_live && <div>{stream.viewers_count} watching</div>}
                       </div>
+                      {stream.is_live && stream.ingest_url && (
+                        <div className="bg-black/40 border border-green-500/30 rounded p-2 mb-2 text-xs">
+                          <div className="flex items-center justify-between mb-1">
+                            <span className="text-green-400 font-semibold uppercase">RTMP Ingest</span>
+                            <span className="text-[10px] text-gray-500 uppercase">{stream.live_mode || 'mock'}</span>
+                          </div>
+                          <div className="font-mono text-gray-300 break-all">{stream.ingest_url}</div>
+                          {stream.stream_key && <div className="mt-1 text-gray-400">key: <span className="font-mono">{stream.stream_key}</span></div>}
+                        </div>
+                      )}
                       {stream.exports && stream.exports.length > 0 && (
                         <div className="text-xs text-gray-500 mb-2">Exported to: {stream.exports.map((x) => x.platform).join(', ')}</div>
                       )}

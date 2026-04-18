@@ -6,6 +6,7 @@ import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { ArrowLeft, Radio, Users, Send, Wallet } from 'lucide-react';
 import Logo from '@/components/Logo';
+import HlsPlayer from '@/components/HlsPlayer';
 import axios from 'axios';
 import { toast } from 'sonner';
 
@@ -168,14 +169,19 @@ const StreamView = () => {
           <div className="grid lg:grid-cols-3 gap-6">
             <div className="lg:col-span-2">
               <div data-testid="stream-player" className="aspect-video bg-black rounded-xl overflow-hidden mb-6 relative">
-                <video src={stream.video_url} controls autoPlay className="w-full h-full"
-                  onError={(e) => { e.target.style.display = 'none'; }}>
-                  Your browser does not support the video tag.
-                </video>
-                {!stream.video_url && (
+                {stream.playback_url || stream.video_url ? (
+                  <HlsPlayer
+                    src={stream.playback_url || stream.video_url}
+                    className="w-full h-full"
+                    testid="hls-stream-player"
+                  />
+                ) : (
                   <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-purple-500/20 to-pink-500/20">
                     <Radio className="w-20 h-20 text-white opacity-50" />
                   </div>
+                )}
+                {stream.live_mode === 'gcp' && (
+                  <div className="absolute top-3 right-3 bg-green-500/80 text-white text-[10px] px-2 py-1 rounded uppercase font-bold">GCP Live</div>
                 )}
               </div>
 

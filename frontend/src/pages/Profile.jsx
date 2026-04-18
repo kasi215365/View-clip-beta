@@ -182,6 +182,20 @@ const Profile = () => {
                   <div><p className="text-gray-400 text-sm mb-1">Amount</p><p className="text-lg font-semibold">${subscription.amount}/mo</p></div>
                   <div><p className="text-gray-400 text-sm mb-1">Renews</p><p className="text-lg font-semibold">{new Date(subscription.expires_at).toLocaleDateString()}</p></div>
                 </div>
+                {subscription.recurring && subscription.stripe_subscription_id && !subscription.cancel_at_period_end && (
+                  <Button data-testid="cancel-sub-btn" onClick={async () => {
+                    if (!window.confirm('Cancel subscription at the end of the current billing period?')) return;
+                    try {
+                      const r = await axios.post(`${API}/payments/subscription/cancel`);
+                      toast.success(r.data.message);
+                      const s = await axios.get(`${API}/subscriptions/status`);
+                      if (s.data.has_subscription) setSubscription(s.data.subscription);
+                    } catch (e) { toast.error('Cancel failed'); }
+                  }} className="mt-4 bg-red-500/80 hover:bg-red-600 text-white">Cancel at Period End</Button>
+                )}
+                {subscription.cancel_at_period_end && (
+                  <div className="mt-4 text-yellow-400 text-sm">⚠ Will cancel on {new Date(subscription.expires_at).toLocaleDateString()}</div>
+                )}
               </div>
             ) : (
               <div className="text-center py-8">

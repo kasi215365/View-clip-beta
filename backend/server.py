@@ -25,6 +25,9 @@ from emergentintegrations.payments.stripe.checkout import (
     CheckoutSessionRequest,
 )
 
+import stripe_service
+import live_stream_service
+
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
@@ -219,6 +222,10 @@ class LiveStream(BaseModel):
     qualified_views: int = 0   # views that hit 30-min threshold
     saved: bool = False
     exports: List[Dict[str, str]] = Field(default_factory=list)
+    playback_url: Optional[str] = None
+    ingest_url: Optional[str] = None
+    stream_key: Optional[str] = None
+    live_mode: Optional[str] = None
 
 class LiveStreamCreate(BaseModel):
     title: str
@@ -512,11 +519,27 @@ async def create_stream(stream_data: LiveStreamCreate, current_user: User = Depe
     if current_user.subscription_status != "active" and current_user.role != "admin":
         raise HTTPException(status_code=403, detail="Active streamer subscription required")
     stream_id = str(uuid.uuid4())
+
+    # Provision live streaming infrastructure (real GCP if configured, mock otherwise)
+    try:
+        provision = await live_stream_service.provision_stream(stream_id)
+    except Exception as e:
+        logger.exception("Live provisioning failed")
+        raise HTTPException(status_code=502, detail=f"Live infra unavailable: {str(e)[:180]}")
+
+    # If client provided a URL, honour it; else use the provisioned playback URL
+    provided_video = stream_data.video_url or provision["playback_url"]
+
     stream_doc = {
         "id": stream_id,
         "streamer_id": current_user.id,
         "streamer_name": current_user.name,
         **stream_data.model_dump(),
+        "video_url": provided_video,
+        "playback_url": provision["playback_url"],
+        "ingest_url": provision["ingest_url"],
+        "stream_key": provision.get("stream_key"),
+        "live_mode": provision.get("mode", "mock"),
         "is_live": True,
         "viewers_count": 0,
         "start_time": now_iso(),
@@ -547,6 +570,12 @@ async def end_stream(stream_id: str, current_user: User = Depends(get_current_us
         {"id": stream_id},
         {"$set": {"is_live": False, "end_time": now_iso()}}
     )
+    # Teardown live-stream infrastructure
+    try:
+        await live_stream_service.stop_stream(stream_id)
+    except Exception as e:
+        logger.warning(f"Live teardown warning for {stream_id}: {e}")
+
     settings = await get_settings()
     rate = settings["earnings_per_view"]
     qualified = stream.get('qualified_views', stream.get('views', 0))
@@ -775,35 +804,73 @@ async def checkout_subscribe(body: CheckoutSubscribe, request: Request, current_
     success_url = f"{origin}/payment-success?session_id={{CHECKOUT_SESSION_ID}}"
     cancel_url = f"{origin}/profile"
 
-    stripe_checkout = get_stripe_checkout(request)
-    checkoutrequest = CheckoutSessionRequest(
-        amount=amount,
-        currency="usd",
-        success_url=success_url,
-        cancel_url=cancel_url,
-        metadata={
-            "purpose": "subscription",
-            "sub_type": body.type,
-            "user_id": current_user.id,
-        }
-    )
-    session: CheckoutSessionResponse = await stripe_checkout.create_checkout_session(checkoutrequest)
+    # Prefer REAL recurring Stripe subscriptions when a real API key is configured.
+    # Fallback: emergentintegrations one-time Checkout (30-day mock renewal).
+    if stripe_service.real_stripe_enabled():
+        try:
+            price_id = await stripe_service.ensure_subscription_price(body.type, amount)
+            session = stripe_service.create_subscription_checkout(
+                price_id=price_id,
+                customer_email=current_user.email,
+                user_id=current_user.id,
+                sub_type=body.type,
+                success_url=success_url,
+                cancel_url=cancel_url,
+            )
+            metadata = {"sub_type": body.type, "recurring": True, "price_id": price_id}
+            url = session["url"]
+            session_id = session["session_id"]
+        except Exception as e:
+            logger.exception("Real Stripe subscription failed, falling back")
+            raise HTTPException(status_code=502, detail=f"Stripe error: {str(e)[:180]}")
+    else:
+        stripe_checkout = get_stripe_checkout(request)
+        checkoutrequest = CheckoutSessionRequest(
+            amount=amount,
+            currency="usd",
+            success_url=success_url,
+            cancel_url=cancel_url,
+            metadata={"purpose": "subscription", "sub_type": body.type, "user_id": current_user.id},
+        )
+        session_resp: CheckoutSessionResponse = await stripe_checkout.create_checkout_session(checkoutrequest)
+        metadata = {"sub_type": body.type, "recurring": False}
+        url = session_resp.url
+        session_id = session_resp.session_id
 
     await db.payment_transactions.insert_one({
         "id": str(uuid.uuid4()),
-        "session_id": session.session_id,
+        "session_id": session_id,
         "user_id": current_user.id,
         "email": current_user.email,
         "amount": amount,
         "currency": "usd",
         "purpose": "subscription",
-        "metadata": {"sub_type": body.type},
+        "metadata": metadata,
         "payment_status": "pending",
         "status": "initiated",
         "processed": False,
         "created_at": now_iso(),
     })
-    return {"url": session.url, "session_id": session.session_id}
+    return {"url": url, "session_id": session_id, "recurring": metadata.get("recurring", False)}
+
+@api_router.post("/payments/subscription/cancel")
+async def cancel_subscription_endpoint(current_user: User = Depends(get_current_user)):
+    """Cancel user's active Stripe Subscription at period end."""
+    sub = await db.subscriptions.find_one(
+        {"user_id": current_user.id, "status": "active", "stripe_subscription_id": {"$exists": True}},
+        {"_id": 0},
+    )
+    if not sub:
+        raise HTTPException(status_code=404, detail="No active subscription to cancel")
+    try:
+        stripe_service.cancel_subscription(sub["stripe_subscription_id"], at_period_end=True)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Stripe error: {str(e)[:180]}")
+    await db.subscriptions.update_one(
+        {"id": sub["id"]},
+        {"$set": {"cancel_at_period_end": True, "cancelled_at": now_iso()}}
+    )
+    return {"message": "Subscription will cancel at period end", "expires_at": sub.get("expires_at")}
 
 @api_router.post("/payments/checkout/gift-bundle")
 async def checkout_gift_bundle(body: CheckoutGiftBundle, request: Request, current_user: User = Depends(get_current_user)):
@@ -904,6 +971,9 @@ async def _fulfill_payment(tx: Dict[str, Any]):
             "created_at": now_iso(),
             "expires_at": expires,
             "session_id": tx["session_id"],
+            "stripe_subscription_id": tx.get("stripe_subscription_id"),
+            "stripe_customer_id": tx.get("stripe_customer_id"),
+            "recurring": True,
         }
         await db.subscriptions.insert_one(sub_doc.copy())
         update = {"subscription_status": "active", "subscription_expires": expires}
@@ -940,8 +1010,98 @@ async def _fulfill_payment(tx: Dict[str, Any]):
 
 @api_router.post("/webhook/stripe")
 async def stripe_webhook(request: Request):
+    """Unified webhook: handles gift-bundle Checkout, subscription lifecycle,
+    and Connect account updates. Uses native stripe SDK verification when
+    STRIPE_WEBHOOK_SECRET is configured; otherwise falls back to emergentintegrations."""
     body = await request.body()
     sig = request.headers.get("Stripe-Signature")
+
+    # Prefer native stripe SDK verification if webhook secret is configured
+    native_event = stripe_service.verify_webhook(body, sig)
+    if native_event:
+        etype = native_event.get("type")
+        obj = native_event["data"]["object"]
+
+        # Gift bundle one-time payment
+        if etype == "checkout.session.completed" and obj.get("mode") == "payment":
+            session_id = obj["id"]
+            tx = await db.payment_transactions.find_one({"session_id": session_id})
+            if tx and not tx.get("processed"):
+                await db.payment_transactions.update_one(
+                    {"session_id": session_id, "processed": {"$ne": True}},
+                    {"$set": {"processed": True, "payment_status": "paid", "status": "completed", "completed_at": now_iso()}}
+                )
+                await _fulfill_payment(tx)
+
+        # Subscription created via Checkout
+        elif etype == "checkout.session.completed" and obj.get("mode") == "subscription":
+            session_id = obj["id"]
+            subscription_id = obj.get("subscription")
+            customer_id = obj.get("customer")
+            tx = await db.payment_transactions.find_one({"session_id": session_id})
+            if tx and not tx.get("processed"):
+                await db.payment_transactions.update_one(
+                    {"session_id": session_id, "processed": {"$ne": True}},
+                    {"$set": {"processed": True, "payment_status": "paid", "status": "completed",
+                              "stripe_subscription_id": subscription_id, "stripe_customer_id": customer_id,
+                              "completed_at": now_iso()}}
+                )
+                await _fulfill_payment({**tx, "stripe_subscription_id": subscription_id,
+                                        "stripe_customer_id": customer_id})
+
+        # Subscription renewal / cancellation lifecycle
+        elif etype in ("customer.subscription.updated", "customer.subscription.deleted"):
+            subscription_id = obj["id"]
+            status = obj.get("status")  # active | canceled | past_due | unpaid
+            cpe = bool(obj.get("cancel_at_period_end"))
+            current_period_end = obj.get("current_period_end")
+            from datetime import datetime as _dt
+            expires = _dt.fromtimestamp(current_period_end, tz=timezone.utc).isoformat() if current_period_end else None
+
+            existing = await db.subscriptions.find_one({"stripe_subscription_id": subscription_id})
+            if existing:
+                user_id = existing["user_id"]
+                if etype == "customer.subscription.deleted" or status in ("canceled", "incomplete_expired"):
+                    await db.subscriptions.update_one({"stripe_subscription_id": subscription_id},
+                                                     {"$set": {"status": "cancelled", "cancelled_at": now_iso()}})
+                    await db.users.update_one({"id": user_id}, {"$set": {"subscription_status": "inactive"}})
+                else:
+                    patch = {"status": "active" if status == "active" else status,
+                             "cancel_at_period_end": cpe}
+                    if expires:
+                        patch["expires_at"] = expires
+                    await db.subscriptions.update_one({"stripe_subscription_id": subscription_id}, {"$set": patch})
+                    if expires:
+                        await db.users.update_one({"id": user_id},
+                                                 {"$set": {"subscription_expires": expires,
+                                                           "subscription_status": "active" if status == "active" else "inactive"}})
+
+        # Invoice paid — extend user subscription window
+        elif etype == "invoice.paid":
+            subscription_id = obj.get("subscription")
+            period_end = obj.get("lines", {}).get("data", [{}])[0].get("period", {}).get("end")
+            if subscription_id and period_end:
+                from datetime import datetime as _dt
+                expires = _dt.fromtimestamp(period_end, tz=timezone.utc).isoformat()
+                await db.subscriptions.update_one({"stripe_subscription_id": subscription_id},
+                                                 {"$set": {"expires_at": expires, "status": "active"}})
+                sub = await db.subscriptions.find_one({"stripe_subscription_id": subscription_id})
+                if sub:
+                    await db.users.update_one({"id": sub["user_id"]},
+                                             {"$set": {"subscription_expires": expires, "subscription_status": "active"}})
+
+        # Connect account updated — refresh streamer status
+        elif etype == "account.updated":
+            account_id = obj["id"]
+            charges_enabled = obj.get("charges_enabled")
+            payouts_enabled = obj.get("payouts_enabled")
+            status = "active" if (charges_enabled and payouts_enabled) else "pending"
+            await db.users.update_one({"connect_account_id": account_id},
+                                     {"$set": {"connect_account_status": status}})
+
+        return {"received": True, "handled": etype}
+
+    # Fallback: emergentintegrations handler (for gift bundles when webhook secret not yet set)
     stripe_checkout = get_stripe_checkout(request)
     try:
         event = await stripe_checkout.handle_webhook(body, sig)
@@ -990,19 +1150,63 @@ async def get_total_earnings(current_user: User = Depends(get_current_user)):
 
 @api_router.post("/streamers/connect/onboard")
 async def connect_onboard(current_user: User = Depends(get_current_user)):
-    """Mock Stripe Connect Express onboarding link. In production this would call
-    stripe.AccountLinks.create(...) after stripe.Account.create(type='express')."""
+    """Stripe Connect Express onboarding. Uses real Stripe when a real API key
+    is configured; falls back to a mock onboarding flow otherwise."""
     if current_user.role != "streamer":
         raise HTTPException(status_code=403, detail="Streamer access required")
-    await db.users.update_one(
-        {"id": current_user.id},
-        {"$set": {"connect_account_status": "active", "connect_onboarded_at": now_iso()}}
-    )
+
+    # Graceful fallback — real Stripe not configured
+    if not stripe_service.real_stripe_enabled():
+        await db.users.update_one(
+            {"id": current_user.id},
+            {"$set": {"connect_account_status": "active", "connect_onboarded_at": now_iso()}}
+        )
+        return {
+            "message": "Connect onboarding complete (mock — configure STRIPE_API_KEY for real)",
+            "onboarding_url": "https://connect.stripe.com/express/onboarding/mock",
+            "status": "active",
+            "mock": True,
+        }
+
+    user_doc = await db.users.find_one({"id": current_user.id}, {"_id": 0})
+    try:
+        account_id = user_doc.get("connect_account_id")
+        if not account_id:
+            account_id = stripe_service.create_connect_account(email=current_user.email)
+            await db.users.update_one(
+                {"id": current_user.id},
+                {"$set": {"connect_account_id": account_id, "connect_account_status": "pending"}},
+            )
+
+        base = os.environ.get("PUBLIC_APP_URL", "").rstrip("/") or ""
+        refresh_url = f"{base}/profile" if base else "https://example.com/profile"
+        return_url = f"{base}/profile?connect=done" if base else "https://example.com/profile"
+        link = stripe_service.create_onboarding_link(account_id, refresh_url, return_url)
+    except Exception as e:
+        logger.exception("Connect onboard failed")
+        raise HTTPException(status_code=502, detail=f"Stripe error: {str(e)[:180]}")
+
     return {
-        "message": "Connect onboarding complete (mock)",
-        "onboarding_url": "https://connect.stripe.com/express/onboarding/mock",
-        "status": "active",
+        "message": "Continue onboarding at Stripe",
+        "onboarding_url": link,
+        "account_id": account_id,
+        "status": "pending",
+        "mock": False,
     }
+
+@api_router.get("/streamers/connect/status")
+async def connect_status(current_user: User = Depends(get_current_user)):
+    user_doc = await db.users.find_one({"id": current_user.id}, {"_id": 0, "connect_account_id": 1})
+    account_id = (user_doc or {}).get("connect_account_id")
+    if not account_id:
+        return {"configured": False}
+    try:
+        info = stripe_service.retrieve_account(account_id)
+    except Exception as e:
+        return {"configured": True, "error": str(e)[:180]}
+    status = "active" if info.get("charges_enabled") and info.get("payouts_enabled") else "pending"
+    await db.users.update_one({"id": current_user.id}, {"$set": {"connect_account_status": status}})
+    return {"configured": True, "status": status, **info}
 
 # =============================================================================
 # ADMIN COMMAND CENTER
@@ -1062,25 +1266,77 @@ async def admin_update_settings(body: AdminSettingsUpdate, _admin: User = Depend
 
 @api_router.post("/admin/payouts/trigger")
 async def admin_trigger_payouts(_admin: User = Depends(require_admin)):
-    """Mark all pending earnings as paid out. In production this would call
-    stripe.Transfer.create(...) for each streamer's Connect account."""
+    """Stripe Connect payout processing. Real Transfer.create when a real Stripe
+    key is configured, otherwise logs mock payouts (earnings marked paid locally)."""
     pipeline = [
         {"$match": {"paid_out": {"$ne": True}}},
         {"$group": {"_id": "$streamer_id", "total": {"$sum": "$amount"}, "count": {"$sum": 1}}},
     ]
     by_streamer = await db.earnings.aggregate(pipeline).to_list(10000)
-    await db.earnings.update_many({"paid_out": {"$ne": True}}, {"$set": {"paid_out": True, "paid_out_at": now_iso()}})
+
+    real_mode = stripe_service.real_stripe_enabled()
+    paid = 0
+    skipped = 0
+    errors = 0
+    total_paid = 0.0
     for row in by_streamer:
+        streamer_id = row["_id"]
+        amount = round(row["total"], 4)
+        if amount <= 0:
+            continue
+        user_doc = await db.users.find_one({"id": streamer_id}, {"_id": 0, "connect_account_id": 1, "connect_account_status": 1, "name": 1})
+        account_id = (user_doc or {}).get("connect_account_id")
+
+        if real_mode:
+            if not account_id or (user_doc or {}).get("connect_account_status") != "active":
+                skipped += 1
+                continue
+            try:
+                tr = stripe_service.transfer_to_connect(
+                    account_id=account_id,
+                    amount_usd=amount,
+                    description=f"View/Clip payout for {user_doc.get('name')}",
+                )
+                transfer_id = tr["id"]
+                status = "completed"
+            except Exception as e:
+                errors += 1
+                logger.error(f"Transfer failed for {streamer_id}: {e}")
+                continue
+        else:
+            transfer_id = f"mock_tr_{uuid.uuid4().hex[:12]}"
+            status = "completed_mock"
+
+        await db.earnings.update_many(
+            {"streamer_id": streamer_id, "paid_out": {"$ne": True}},
+            {"$set": {"paid_out": True, "paid_out_at": now_iso(), "stripe_transfer_id": transfer_id}},
+        )
         await db.payouts.insert_one({
             "id": str(uuid.uuid4()),
-            "streamer_id": row["_id"],
-            "amount": round(row["total"], 4),
+            "streamer_id": streamer_id,
+            "amount": amount,
             "earnings_count": row["count"],
-            "status": "completed_mock",
+            "stripe_transfer_id": transfer_id,
+            "status": status,
             "processed_at": now_iso(),
         })
-    total_paid = round(sum(r["total"] for r in by_streamer), 4)
-    return {"message": "Payouts processed", "streamers_paid": len(by_streamer), "total_paid": total_paid}
+        await _notify(streamer_id, "payout", "Payout sent",
+                      f"${amount:.2f} transferred.",
+                      {"amount": amount, "transfer_id": transfer_id})
+        paid += 1
+        total_paid += amount
+
+    await db.audit_log.insert_one({
+        "id": str(uuid.uuid4()),
+        "actor_id": _admin.id,
+        "action": "payouts.trigger",
+        "meta": {"paid": paid, "skipped": skipped, "errors": errors,
+                 "total_paid": round(total_paid, 2), "real_mode": real_mode},
+        "created_at": now_iso(),
+    })
+    return {"message": "Payouts processed", "streamers_paid": paid,
+            "skipped_no_connect": skipped, "errors": errors,
+            "total_paid": round(total_paid, 2), "real_mode": real_mode}
 
 @api_router.get("/admin/payouts")
 async def admin_list_payouts(_admin: User = Depends(require_admin)):
@@ -1381,6 +1637,10 @@ async def admin_system_health(_admin: User = Depends(require_admin)):
         "firewall": {"rate_limit_per_min": int(os.environ.get("FIREWALL_RATE_LIMIT_PER_MIN", "300")),
                      "blocked_requests": _REQUEST_COUNTER.get("blocked", 0)},
         "encryption": {"algorithm": "Fernet (AES-128-CBC + HMAC-SHA256)", "vault_key_configured": bool(_VAULT_KEY)},
+        "integrations": {
+            "stripe_mode": "real" if stripe_service.real_stripe_enabled() else "mock (emergentintegrations)",
+            "livestream_mode": "gcp-livestream" if live_stream_service.is_live_enabled() else "mock",
+        },
     }
 
 @api_router.post("/admin/system/reload-settings")
@@ -1409,15 +1669,61 @@ async def admin_deploy_update(_admin: User = Depends(require_admin)):
 
 @api_router.post("/admin/system/rotate-keys")
 async def admin_rotate_keys(_admin: User = Depends(require_admin)):
-    """Logs a key rotation event. Real rotation re-encrypts vault fields with a new key."""
+    """Generate a new Fernet vault key, re-encrypt every vault field, atomically
+    rotate to the new key. Uses Fernet.MultiFernet semantics: new key becomes the
+    encrypting key, old key stays in env for decrypting legacy rows during migration."""
+    global _vault_cipher, _VAULT_KEY
+    from cryptography.fernet import Fernet as _F
+
+    new_key = _F.generate_key().decode()
+    old_cipher = _vault_cipher
+    new_cipher = _F(new_key.encode())
+
+    # Re-encrypt banking_info records
+    rotated = 0
+    failed = 0
+    async for row in db.banking_info.find({}):
+        patch = {}
+        for fld in ("account_number_enc", "routing_number_enc"):
+            enc = row.get(fld)
+            if not enc:
+                continue
+            try:
+                plain = old_cipher.decrypt(enc.encode()).decode()
+                patch[fld] = new_cipher.encrypt(plain.encode()).decode()
+            except Exception:
+                failed += 1
+        if patch:
+            patch["key_rotated_at"] = now_iso()
+            await db.banking_info.update_one({"_id": row["_id"]}, {"$set": patch})
+            rotated += 1
+
+    # Swap active cipher in-process
+    _vault_cipher = new_cipher
+    _VAULT_KEY = new_key
+
     event = {
         "id": str(uuid.uuid4()),
         "type": "keys.rotate",
         "actor": _admin.id,
+        "rotated_records": rotated,
+        "failed_records": failed,
         "created_at": now_iso(),
     }
     await db.system_events.insert_one(event.copy())
-    return {"message": "Key rotation event logged. Re-encryption job queued.", "event": event}
+    await db.audit_log.insert_one({
+        "id": str(uuid.uuid4()),
+        "actor_id": _admin.id,
+        "action": "keys.rotate",
+        "meta": {"rotated": rotated, "failed": failed},
+        "created_at": now_iso(),
+    })
+    logger.info(f"Vault key rotated — {rotated} records re-encrypted, {failed} failures")
+    return {"message": f"Key rotated. {rotated} records re-encrypted, {failed} failed.",
+            "rotated": rotated, "failed": failed,
+            "warning": "Save the new VAULT_ENCRYPTION_KEY to your env before the next restart.",
+            "new_key_preview": new_key[:12] + "...",
+            "event": event}
 
 @api_router.get("/admin/system/events")
 async def admin_system_events(_admin: User = Depends(require_admin)):
@@ -1432,14 +1738,21 @@ async def admin_audit(_admin: User = Depends(require_admin)):
 @api_router.get("/admin/streaming/providers")
 async def admin_streaming_providers(_admin: User = Depends(require_admin)):
     """Lists hot-swappable cloud streaming providers. Reflects what's wired in."""
-    current = os.environ.get("STREAMING_PROVIDER", "mock")
+    current = os.environ.get("STREAMING_PROVIDER", "gcp-livestream" if live_stream_service.is_live_enabled() else "mock")
+    cost = await live_stream_service.active_channels_cost()
     return {
         "current": current,
+        "gcp_configured": live_stream_service.is_live_enabled(),
+        "active_cost": cost,
         "providers": [
+            {"id": "gcp-livestream", "name": "Google Cloud Live Stream",
+             "status": "active" if live_stream_service.is_live_enabled() else "available",
+             "requires": ["GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_CLOUD_PROJECT", "LIVESTREAM_GCS_BUCKET"]},
             {"id": "mux", "name": "Mux", "status": "available", "requires": ["MUX_TOKEN_ID", "MUX_TOKEN_SECRET"]},
             {"id": "aws-ivs", "name": "AWS IVS", "status": "available", "requires": ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"]},
             {"id": "cloudflare-stream", "name": "Cloudflare Stream", "status": "available", "requires": ["CF_ACCOUNT_ID", "CF_STREAM_TOKEN"]},
-            {"id": "mock", "name": "Direct URL (mock)", "status": "active" if current == "mock" else "available", "requires": []},
+            {"id": "mock", "name": "Direct URL (mock)",
+             "status": "active" if not live_stream_service.is_live_enabled() and current == "mock" else "available", "requires": []},
         ],
     }
 
