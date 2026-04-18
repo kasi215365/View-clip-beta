@@ -16,6 +16,11 @@ from collections import defaultdict, deque
 from datetime import datetime, timezone, timedelta
 import bcrypt
 import jwt
+import pyotp
+import qrcode
+import io
+import base64
+from ipaddress import ip_address, ip_network
 from cryptography.fernet import Fernet, InvalidToken
 
 from emergentintegrations.payments.stripe.checkout import (
@@ -167,6 +172,11 @@ class UserRegister(BaseModel):
 class UserLogin(BaseModel):
     email: EmailStr
     password: str
+
+class AdminLogin(BaseModel):
+    email: EmailStr
+    password: str
+    totp_code: Optional[str] = None
 
 class User(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -432,8 +442,9 @@ async def get_me(current_user: User = Depends(get_current_user)):
     return current_user
 
 @api_router.post("/admin/auth/login")
-async def admin_login(credentials: UserLogin, request: Request):
-    """Dedicated staff-portal login. Admin role required. Every attempt is audited."""
+async def admin_login(credentials: AdminLogin, request: Request):
+    """Dedicated staff-portal login. Admin role + TOTP 2FA (if enabled) required.
+    Every attempt is audited with IP."""
     user = await db.users.find_one({"email": credentials.email})
     client_ip = request.client.host if request.client else "unknown"
 
@@ -457,8 +468,24 @@ async def admin_login(credentials: UserLogin, request: Request):
         })
         raise HTTPException(status_code=403, detail="Admin access required")
 
+    # Step 2: TOTP 2FA challenge when enabled
+    if user.get("totp_enabled"):
+        if not credentials.totp_code:
+            # Signal the client to render the 2FA step (no token yet)
+            return {"require_2fa": True, "message": "Enter 6-digit code from your authenticator app"}
+        secret = user.get("totp_secret")
+        if not secret or not pyotp.TOTP(secret).verify(credentials.totp_code, valid_window=1):
+            await db.audit_log.insert_one({
+                "id": str(uuid.uuid4()),
+                "actor_id": user["id"],
+                "action": "admin.auth.2fa_failed",
+                "meta": {"email": credentials.email, "ip": client_ip},
+                "created_at": now_iso(),
+            })
+            raise HTTPException(status_code=401, detail="Invalid 2FA code")
+
     token = create_token(user['id'], user['email'], user['role'])
-    payload = {k: v for k, v in user.items() if k not in ['_id', 'password_hash']}
+    payload = {k: v for k, v in user.items() if k not in ['_id', 'password_hash', 'totp_secret']}
     payload.setdefault("gift_wallet", {})
     payload.setdefault("connect_account_status", "not_onboarded")
 
@@ -466,10 +493,89 @@ async def admin_login(credentials: UserLogin, request: Request):
         "id": str(uuid.uuid4()),
         "actor_id": user["id"],
         "action": "admin.auth.success",
-        "meta": {"email": user["email"], "ip": client_ip},
+        "meta": {"email": user["email"], "ip": client_ip, "twofa": bool(user.get("totp_enabled"))},
         "created_at": now_iso(),
     })
     return {"token": token, "user": User(**payload), "portal": "staff"}
+
+@api_router.post("/admin/auth/2fa/setup")
+async def admin_2fa_setup(_admin: User = Depends(require_admin)):
+    """Generate a new TOTP secret + QR code. Secret is STAGED (not activated) until
+    /admin/auth/2fa/enable is called with a valid 6-digit code."""
+    secret = pyotp.random_base32()
+    issuer = "View/Clip Staff"
+    uri = pyotp.TOTP(secret).provisioning_uri(name=_admin.email, issuer_name=issuer)
+
+    # Generate QR PNG → base64 for inline display
+    img = qrcode.make(uri)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    qr_b64 = base64.b64encode(buf.getvalue()).decode()
+
+    await db.users.update_one(
+        {"id": _admin.id},
+        {"$set": {"totp_secret_pending": secret}}
+    )
+    return {
+        "secret": secret,
+        "provisioning_uri": uri,
+        "qr_code_png_base64": f"data:image/png;base64,{qr_b64}",
+        "issuer": issuer,
+    }
+
+@api_router.post("/admin/auth/2fa/enable")
+async def admin_2fa_enable(body: Dict[str, str], _admin: User = Depends(require_admin)):
+    code = (body.get("code") or "").strip()
+    user = await db.users.find_one({"id": _admin.id}, {"_id": 0, "totp_secret_pending": 1})
+    secret = (user or {}).get("totp_secret_pending")
+    if not secret:
+        raise HTTPException(status_code=400, detail="Run /admin/auth/2fa/setup first")
+    if not pyotp.TOTP(secret).verify(code, valid_window=1):
+        raise HTTPException(status_code=401, detail="Invalid code")
+    await db.users.update_one(
+        {"id": _admin.id},
+        {"$set": {"totp_secret": secret, "totp_enabled": True},
+         "$unset": {"totp_secret_pending": ""}}
+    )
+    await db.audit_log.insert_one({
+        "id": str(uuid.uuid4()),
+        "actor_id": _admin.id,
+        "action": "admin.2fa.enabled",
+        "meta": {"email": _admin.email},
+        "created_at": now_iso(),
+    })
+    return {"message": "2FA enabled for your account"}
+
+@api_router.post("/admin/auth/2fa/disable")
+async def admin_2fa_disable(body: Dict[str, str], _admin: User = Depends(require_admin)):
+    code = (body.get("code") or "").strip()
+    user = await db.users.find_one({"id": _admin.id}, {"_id": 0, "totp_secret": 1, "totp_enabled": 1})
+    if not (user or {}).get("totp_enabled"):
+        raise HTTPException(status_code=400, detail="2FA is not enabled")
+    secret = (user or {}).get("totp_secret")
+    if not secret or not pyotp.TOTP(secret).verify(code, valid_window=1):
+        raise HTTPException(status_code=401, detail="Invalid code")
+    await db.users.update_one(
+        {"id": _admin.id},
+        {"$set": {"totp_enabled": False},
+         "$unset": {"totp_secret": "", "totp_secret_pending": ""}}
+    )
+    await db.audit_log.insert_one({
+        "id": str(uuid.uuid4()),
+        "actor_id": _admin.id,
+        "action": "admin.2fa.disabled",
+        "meta": {"email": _admin.email},
+        "created_at": now_iso(),
+    })
+    return {"message": "2FA disabled"}
+
+@api_router.get("/admin/auth/2fa/status")
+async def admin_2fa_status(_admin: User = Depends(require_admin)):
+    user = await db.users.find_one({"id": _admin.id}, {"_id": 0, "totp_enabled": 1, "totp_secret_pending": 1})
+    return {
+        "enabled": bool((user or {}).get("totp_enabled")),
+        "pending_setup": bool((user or {}).get("totp_secret_pending")),
+    }
 
 # =============================================================================
 # CONTENT
@@ -1675,7 +1781,9 @@ async def admin_system_health(_admin: User = Depends(require_admin)):
         "requests": {"total": _REQUEST_COUNTER["total"],
                      "top_paths": sorted(_REQUEST_COUNTER["by_path"].items(), key=lambda x: -x[1])[:10]},
         "firewall": {"rate_limit_per_min": int(os.environ.get("FIREWALL_RATE_LIMIT_PER_MIN", "300")),
-                     "blocked_requests": _REQUEST_COUNTER.get("blocked", 0)},
+                     "blocked_requests": _REQUEST_COUNTER.get("blocked", 0),
+                     "admin_ip_allowlist_enabled": bool(_ADMIN_ALLOWLIST_NETS),
+                     "admin_ip_allowlist_count": len(_ADMIN_ALLOWLIST_NETS)},
         "encryption": {"algorithm": "Fernet (AES-128-CBC + HMAC-SHA256)", "vault_key_configured": bool(_VAULT_KEY)},
         "integrations": {
             "stripe_mode": "real" if stripe_service.real_stripe_enabled() else "mock (emergentintegrations)",
@@ -1823,11 +1931,40 @@ app.include_router(api_router)
 # LEVEL-3 LOGIC FIREWALL MIDDLEWARE
 # - Per-IP sliding-window rate limit
 # - Path-level counters for admin observability
-# - Admin API structured audit (who accessed what)
+# - IP allowlist for /api/admin/* endpoints when ADMIN_IP_ALLOWLIST is set
 # =============================================================================
 _RATE_WINDOW_SEC = 60
 _RATE_LIMIT = int(os.environ.get("FIREWALL_RATE_LIMIT_PER_MIN", "300"))
 _ip_hits: Dict[str, deque] = defaultdict(deque)
+
+
+def _parse_allowlist(raw: str):
+    nets = []
+    for item in (raw or "").split(","):
+        item = item.strip()
+        if not item:
+            continue
+        try:
+            nets.append(ip_network(item, strict=False))
+        except ValueError:
+            try:
+                nets.append(ip_network(f"{item}/32", strict=False))
+            except ValueError:
+                logger.warning("ADMIN_IP_ALLOWLIST: skipping invalid entry %s", item)
+    return nets
+
+
+_ADMIN_ALLOWLIST_NETS = _parse_allowlist(os.environ.get("ADMIN_IP_ALLOWLIST", ""))
+
+
+def _ip_allowed_for_admin(ip: str) -> bool:
+    if not _ADMIN_ALLOWLIST_NETS:
+        return True  # allowlist disabled
+    try:
+        addr = ip_address(ip)
+    except ValueError:
+        return False
+    return any(addr in n for n in _ADMIN_ALLOWLIST_NETS)
 
 
 class FirewallMiddleware(BaseHTTPMiddleware):
@@ -1836,7 +1973,23 @@ class FirewallMiddleware(BaseHTTPMiddleware):
         ip = request.client.host if request.client else "unknown"
         now = time.time()
 
-        # Sliding-window rate limit (skip for non-api routes and static)
+        # IP allowlist for admin surfaces (login + admin API)
+        if (path.startswith("/api/admin/") or path == "/api/admin/auth/login") and not _ip_allowed_for_admin(ip):
+            _REQUEST_COUNTER["blocked"] = _REQUEST_COUNTER.get("blocked", 0) + 1
+            # Fire-and-forget audit log of blocked admin IP
+            try:
+                await db.audit_log.insert_one({
+                    "id": str(uuid.uuid4()),
+                    "actor_id": None,
+                    "action": "admin.ip.blocked",
+                    "meta": {"ip": ip, "path": path},
+                    "created_at": now_iso(),
+                })
+            except Exception:
+                pass
+            return JSONResponse(status_code=403, content={"detail": "IP not allowed"})
+
+        # Sliding-window rate limit for any /api/*
         if path.startswith("/api/"):
             q = _ip_hits[ip]
             while q and now - q[0] > _RATE_WINDOW_SEC:

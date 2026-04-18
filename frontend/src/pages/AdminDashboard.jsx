@@ -518,6 +518,87 @@ const SystemPanel = () => {
           </div>
         </div>
       </div>
+
+      {/* 2FA Security */}
+      <TwoFactorCard />
+    </div>
+  );
+};
+
+const TwoFactorCard = () => {
+  const [status, setStatus] = useState(null);
+  const [setupData, setSetupData] = useState(null);
+  const [code, setCode] = useState('');
+
+  const refresh = async () => {
+    try { const r = await axios.get(`${API}/admin/auth/2fa/status`); setStatus(r.data); }
+    catch (e) { /* noop */ }
+  };
+  useEffect(() => { refresh(); }, []);
+
+  const startSetup = async () => {
+    try { const r = await axios.post(`${API}/admin/auth/2fa/setup`); setSetupData(r.data); }
+    catch (e) { toast.error('Setup failed'); }
+  };
+  const enable = async () => {
+    try { await axios.post(`${API}/admin/auth/2fa/enable`, { code }); toast.success('2FA enabled'); setSetupData(null); setCode(''); refresh(); }
+    catch (e) { toast.error(e.response?.data?.detail || 'Invalid code'); }
+  };
+  const disable = async () => {
+    const c = window.prompt('Enter current 6-digit code to disable 2FA:');
+    if (!c) return;
+    try { await axios.post(`${API}/admin/auth/2fa/disable`, { code: c }); toast.success('2FA disabled'); refresh(); }
+    catch (e) { toast.error(e.response?.data?.detail || 'Failed'); }
+  };
+
+  if (!status) return null;
+
+  return (
+    <div data-testid="twofa-card" className="glass-panel rounded-xl p-6 border border-fuchsia-500/20">
+      <h3 className="text-lg font-bold mb-2 flex items-center gap-2">
+        <Shield className="w-5 h-5 text-fuchsia-400" />
+        Two-Factor Authentication (TOTP)
+      </h3>
+      <p className="text-gray-400 text-sm mb-4">
+        Add a second factor to your staff account. Works with Google Authenticator, 1Password, Authy, etc.
+      </p>
+
+      {status.enabled ? (
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2 text-green-400">
+            <span className="w-2 h-2 rounded-full bg-green-400"></span>2FA is enabled on your account
+          </div>
+          <Button data-testid="twofa-disable-btn" onClick={disable} className="bg-red-500/80 hover:bg-red-600 text-white">Disable</Button>
+        </div>
+      ) : setupData ? (
+        <div className="grid md:grid-cols-2 gap-4">
+          <div className="bg-white/5 rounded-lg p-4">
+            <div className="text-xs text-gray-400 mb-2">Scan with your authenticator app</div>
+            <img data-testid="twofa-qr" src={setupData.qr_code_png_base64} alt="TOTP QR" className="w-40 h-40 bg-white p-2 rounded" />
+            <div className="mt-3">
+              <div className="text-xs text-gray-400 mb-1">Or enter manually:</div>
+              <div data-testid="twofa-secret" className="font-mono text-xs text-cyan-400 break-all bg-black/30 rounded p-2">{setupData.secret}</div>
+            </div>
+          </div>
+          <div>
+            <Label className="text-sm text-gray-300">Then enter the 6-digit code to confirm</Label>
+            <Input
+              data-testid="twofa-enable-code-input"
+              value={code}
+              onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+              inputMode="numeric"
+              maxLength={6}
+              className="bg-white/5 border-white/10 text-white mt-2 font-mono text-center text-xl tracking-[0.4em]"
+              placeholder="000000"
+            />
+            <Button data-testid="twofa-enable-btn" onClick={enable} disabled={code.length !== 6}
+              className="w-full mt-3 bg-green-500 hover:bg-green-600">Enable 2FA</Button>
+            <button type="button" onClick={() => setSetupData(null)} className="w-full mt-2 text-xs text-gray-500 hover:text-white">Cancel</button>
+          </div>
+        </div>
+      ) : (
+        <Button data-testid="twofa-setup-btn" onClick={startSetup} className="bg-fuchsia-500 hover:bg-fuchsia-600">Set up 2FA</Button>
+      )}
     </div>
   );
 };

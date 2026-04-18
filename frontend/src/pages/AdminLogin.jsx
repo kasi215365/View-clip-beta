@@ -19,19 +19,39 @@ const AdminLogin = () => {
   const navigate = useNavigate();
   const { login } = useContext(AuthContext);
   const [creds, setCreds] = useState({ email: '', password: '' });
+  const [step, setStep] = useState('creds'); // creds | totp
+  const [totpCode, setTotpCode] = useState('');
   const [loading, setLoading] = useState(false);
 
-  const handleSubmit = async (e) => {
+  const submitCreds = async (e) => {
     e.preventDefault();
     setLoading(true);
     try {
       const res = await axios.post(`${API}/admin/auth/login`, creds);
+      if (res.data.require_2fa) {
+        setStep('totp');
+      } else {
+        login(res.data.token, res.data.user);
+        toast.success('Staff access granted');
+        navigate('/admin');
+      }
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Login failed');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const submitTotp = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    try {
+      const res = await axios.post(`${API}/admin/auth/login`, { ...creds, totp_code: totpCode });
       login(res.data.token, res.data.user);
       toast.success('Staff access granted');
       navigate('/admin');
     } catch (error) {
-      const msg = error.response?.data?.detail || 'Login failed';
-      toast.error(msg);
+      toast.error(error.response?.data?.detail || '2FA verification failed');
     } finally {
       setLoading(false);
     }
@@ -73,44 +93,82 @@ const AdminLogin = () => {
         </div>
 
         <div className="glass-panel rounded-2xl p-8 border border-fuchsia-500/20">
-          <form onSubmit={handleSubmit} className="space-y-4">
-            <div>
-              <Label htmlFor="admin-email" className="text-white text-xs uppercase tracking-wider">Staff Email</Label>
+          {step === 'creds' ? (
+            <form onSubmit={submitCreds} className="space-y-4">
+              <div>
+                <Label htmlFor="admin-email" className="text-white text-xs uppercase tracking-wider">Staff Email</Label>
+                <Input
+                  data-testid="admin-login-email-input"
+                  id="admin-email"
+                  type="email"
+                  value={creds.email}
+                  onChange={(e) => setCreds({ ...creds, email: e.target.value })}
+                  required
+                  autoComplete="email"
+                  className="bg-black/40 border-fuchsia-500/20 text-white placeholder:text-gray-600 mt-2 font-mono"
+                  placeholder="staff@viewclip.com"
+                />
+              </div>
+              <div>
+                <Label htmlFor="admin-password" className="text-white text-xs uppercase tracking-wider">Password</Label>
+                <Input
+                  data-testid="admin-login-password-input"
+                  id="admin-password"
+                  type="password"
+                  value={creds.password}
+                  onChange={(e) => setCreds({ ...creds, password: e.target.value })}
+                  required
+                  autoComplete="current-password"
+                  className="bg-black/40 border-fuchsia-500/20 text-white placeholder:text-gray-600 mt-2 font-mono"
+                  placeholder="••••••••"
+                />
+              </div>
+              <Button
+                data-testid="admin-login-submit-btn"
+                type="submit"
+                disabled={loading}
+                className="w-full bg-gradient-to-r from-fuchsia-500 to-cyan-400 hover:opacity-90 rounded-lg py-6 mt-4 font-bold tracking-wider uppercase text-[#030509]"
+              >
+                {loading ? 'Authenticating…' : 'Continue'}
+              </Button>
+            </form>
+          ) : (
+            <form onSubmit={submitTotp} className="space-y-4" data-testid="admin-totp-step">
+              <div className="text-center mb-4">
+                <div className="text-xs text-fuchsia-300 tracking-wider uppercase mb-2">Two-Factor Authentication</div>
+                <p className="text-gray-400 text-sm">Enter the 6-digit code from your authenticator app.</p>
+              </div>
               <Input
-                data-testid="admin-login-email-input"
-                id="admin-email"
-                type="email"
-                value={creds.email}
-                onChange={(e) => setCreds({ ...creds, email: e.target.value })}
+                data-testid="admin-totp-code-input"
+                type="text"
+                value={totpCode}
+                onChange={(e) => setTotpCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
                 required
-                autoComplete="email"
-                className="bg-black/40 border-fuchsia-500/20 text-white placeholder:text-gray-600 mt-2 font-mono"
-                placeholder="staff@viewclip.com"
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                maxLength={6}
+                className="bg-black/40 border-fuchsia-500/20 text-white placeholder:text-gray-600 font-mono text-center text-2xl tracking-[0.5em] py-6"
+                placeholder="000000"
+                autoFocus
               />
-            </div>
-            <div>
-              <Label htmlFor="admin-password" className="text-white text-xs uppercase tracking-wider">Password</Label>
-              <Input
-                data-testid="admin-login-password-input"
-                id="admin-password"
-                type="password"
-                value={creds.password}
-                onChange={(e) => setCreds({ ...creds, password: e.target.value })}
-                required
-                autoComplete="current-password"
-                className="bg-black/40 border-fuchsia-500/20 text-white placeholder:text-gray-600 mt-2 font-mono"
-                placeholder="••••••••"
-              />
-            </div>
-            <Button
-              data-testid="admin-login-submit-btn"
-              type="submit"
-              disabled={loading}
-              className="w-full bg-gradient-to-r from-fuchsia-500 to-cyan-400 hover:opacity-90 rounded-lg py-6 mt-4 font-bold tracking-wider uppercase text-[#030509]"
-            >
-              {loading ? 'Authenticating…' : 'Enter Command Center'}
-            </Button>
-          </form>
+              <Button
+                data-testid="admin-totp-submit-btn"
+                type="submit"
+                disabled={loading || totpCode.length !== 6}
+                className="w-full bg-gradient-to-r from-fuchsia-500 to-cyan-400 hover:opacity-90 rounded-lg py-6 font-bold tracking-wider uppercase text-[#030509]"
+              >
+                {loading ? 'Verifying…' : 'Verify & Enter'}
+              </Button>
+              <button
+                type="button"
+                data-testid="admin-totp-back-btn"
+                onClick={() => { setStep('creds'); setTotpCode(''); }}
+                className="w-full text-xs text-gray-500 hover:text-white mt-2"
+              >
+                ← Use a different account
+              </button>
+            </form>
+          )}
 
           <div className="mt-6 pt-6 border-t border-white/5 flex items-start gap-2 text-xs text-gray-500">
             <AlertTriangle className="w-4 h-4 mt-0.5 flex-shrink-0 text-yellow-500" />

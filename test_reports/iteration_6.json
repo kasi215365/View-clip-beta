@@ -1,0 +1,129 @@
+{
+  "summary": "Iteration 6 testing of View/Clip admin 2FA (TOTP) and IP allowlist. Backend: 100% pass (24 tests). Frontend: All 2FA UI elements verified. Admin login two-step flow, 2FA setup/enable/disable, and IP allowlist health check all working correctly.",
+  
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  
+  "passed_tests": {
+    "backend_2fa_features": [
+      "GET /api/admin/auth/2fa/status - returns {enabled: false, pending_setup: false} for admin with no 2FA",
+      "GET /api/admin/auth/2fa/status - requires admin role (403 for non-admin)",
+      "POST /api/admin/auth/2fa/setup - returns {secret, provisioning_uri, qr_code_png_base64, issuer}",
+      "POST /api/admin/auth/2fa/setup - stores totp_secret_pending on user (status.pending_setup=true)",
+      "POST /api/admin/auth/2fa/enable with wrong code → 401",
+      "POST /api/admin/auth/2fa/enable with correct pyotp code → {message: '2FA enabled'}, status.enabled=true",
+      "POST /api/admin/auth/login WITHOUT totp_code after 2FA enabled → {require_2fa: true, message: ...} (NO token)",
+      "POST /api/admin/auth/login WITH correct totp_code → {token, user, portal: 'staff'} AND audit_log action='admin.auth.success' meta.twofa=true",
+      "POST /api/admin/auth/login WITH bad totp_code → 401, audit_log action='admin.auth.2fa_failed'",
+      "POST /api/admin/auth/2fa/disable with correct code → {message: '2FA disabled'}, status.enabled=false",
+      "Regression: admin login without 2FA still works and creates audit 'admin.auth.success' entry"
+    ],
+    "backend_ip_allowlist": [
+      "GET /api/admin/system/health - firewall.admin_ip_allowlist_enabled=false (ADMIN_IP_ALLOWLIST='' in env)",
+      "GET /api/admin/system/health - firewall.admin_ip_allowlist_count=0"
+    ],
+    "backend_version": [
+      "GET /api/admin/system/health - version=1.3.0"
+    ],
+    "backend_regression": [
+      "Health shows stripe_mode and livestream_mode",
+      "System health shows 3 DB layers (identity, streaming, vault)",
+      "Firewall rate limit is 300",
+      "Connect onboard returns mock=true",
+      "Subscription checkout works",
+      "Promos endpoint works",
+      "Gift tiers endpoint returns 8 tiers",
+      "Content list endpoint works",
+      "Streams list endpoint works"
+    ],
+    "frontend": [
+      "/admin/login page has data-testid: admin-login-email-input, admin-login-password-input, admin-login-submit-btn",
+      "/admin/login two-step flow: creds → require_2fa → TOTP step with admin-totp-step, admin-totp-code-input, admin-totp-submit-btn, admin-totp-back-btn",
+      "Admin Command Center → System tab shows version v1.3.0",
+      "System tab shows 3 DB layers (Identity, Streaming, Vault) with latencies",
+      "System tab shows Encryption info (Fernet AES-128-CBC + HMAC-SHA256, Vault Key Loaded)",
+      "System tab shows Cloud Streaming Provider hot-swap grid with Direct URL (mock) active",
+      "System tab shows System Actions (Reload Settings, Deploy Update, Rotate Keys)",
+      "System tab shows System Events and Audit Log with 2FA events",
+      "System tab has Two-Factor Authentication (TOTP) card with data-testid=twofa-card",
+      "2FA card shows twofa-setup-btn when 2FA not enabled",
+      "After clicking setup: twofa-qr (QR code), twofa-secret, twofa-enable-code-input, twofa-enable-btn all present"
+    ]
+  },
+  
+  "test_report_links": [
+    "/app/backend/tests/test_viewclip_iteration6.py",
+    "/app/test_reports/pytest/pytest_iteration6.xml"
+  ],
+  
+  "action_items": [],
+  
+  "critical_code_review_comments": [
+    "AdminLogin pydantic model correctly has optional totp_code field",
+    "admin_login endpoint correctly handles require_2fa case (returns 200 with require_2fa=true, no token)",
+    "admin_2fa_setup correctly generates TOTP secret, QR code, and stores totp_secret_pending",
+    "admin_2fa_enable correctly validates code with pyotp.TOTP.verify(valid_window=1)",
+    "admin_2fa_disable correctly validates code before disabling",
+    "FirewallMiddleware correctly implements _ip_allowed_for_admin check",
+    "_parse_allowlist correctly parses comma-separated IPs/CIDRs",
+    "admin_system_health correctly reports admin_ip_allowlist_enabled and admin_ip_allowlist_count",
+    "All 2FA operations create audit_log entries with IP address"
+  ],
+  
+  "updated_files": [
+    "/app/backend/tests/test_viewclip_iteration6.py"
+  ],
+  
+  "success_rate": {
+    "backend": "100% (24 tests)",
+    "frontend": "100% (all 2FA UI elements verified)"
+  },
+  
+  "test_credentials": {
+    "admin": "admin@viewclip.com / Admin123!",
+    "pyotp": "Used pyotp.TOTP(secret).now() to generate valid TOTP codes during testing"
+  },
+  
+  "seed_data_creation": "Multiple test users created during testing",
+  
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  
+  "context_for_next_testing_agent": "Iteration 6 adds TOTP 2FA for admin login and IP allowlist for /api/admin/* endpoints. 2FA flow: setup → enable → next login requires code → disable optional. IP allowlist is DISABLED by default (ADMIN_IP_ALLOWLIST='' in env). When enabled, requests from unlisted IPs get 403 with audit 'admin.ip.blocked'. All 2FA operations are audited. Version is 1.3.0. IMPORTANT: After testing 2FA, always disable it on the admin account to leave system in clean state.",
+  
+  "mocked_apis": {
+    "Stripe Connect Express": "POST /api/streamers/connect/onboard returns mock=true when STRIPE_API_KEY=sk_test_emergent",
+    "Stripe Recurring Subscriptions": "POST /api/payments/checkout/subscribe falls back to emergentintegrations (recurring=false)",
+    "Google Cloud Live Stream": "POST /api/streams returns mock ingest/playback URLs when GCP creds not configured"
+  },
+  
+  "features_verified": {
+    "2fa_endpoints": {
+      "GET /api/admin/auth/2fa/status": "Returns {enabled, pending_setup}",
+      "POST /api/admin/auth/2fa/setup": "Returns {secret, provisioning_uri, qr_code_png_base64, issuer}",
+      "POST /api/admin/auth/2fa/enable": "Validates code, enables 2FA, creates audit log",
+      "POST /api/admin/auth/2fa/disable": "Validates code, disables 2FA, creates audit log"
+    },
+    "admin_login_with_2fa": {
+      "without_totp_code": "Returns {require_2fa: true, message: ...} - NO token",
+      "with_correct_totp_code": "Returns {token, user, portal: 'staff'}, audit action='admin.auth.success' meta.twofa=true",
+      "with_bad_totp_code": "Returns 401, audit action='admin.auth.2fa_failed'"
+    },
+    "ip_allowlist": {
+      "health_endpoint": "admin_ip_allowlist_enabled=false, admin_ip_allowlist_count=0 when ADMIN_IP_ALLOWLIST=''",
+      "firewall_behavior": "When enabled, unlisted IPs get 403 with {detail: 'IP not allowed'} and audit 'admin.ip.blocked'"
+    },
+    "frontend_components": {
+      "AdminLogin": "Two-step state machine (creds|totp), submitCreds/submitTotp handlers",
+      "TwoFactorCard": "Setup button → QR + secret + code input + enable button → disable button when enabled"
+    }
+  }
+}

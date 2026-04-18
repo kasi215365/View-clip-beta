@@ -77,6 +77,39 @@ sleep 3
 tail -n 5 /var/log/supervisor/backend.err.log   # should say "Live Stream: REAL (GCP)"
 ```
 
+## 3. Admin IP Allowlist (optional, recommended for production)
+
+Restrict `/api/admin/*` endpoints (including the staff login) to known IPs. Blocked attempts are audited.
+
+Edit `/app/backend/.env`:
+
+```bash
+# Comma-separated list of IPv4/IPv6 addresses or CIDR ranges.
+# Empty = allowlist disabled (allow all).
+ADMIN_IP_ALLOWLIST=203.0.113.10,198.51.100.0/24
+```
+
+Restart: `sudo supervisorctl restart backend`
+
+Verify:
+- From an allowed IP: admin login works normally
+- From any other IP: all `/api/admin/*` calls return **403 "IP not allowed"** and an `admin.ip.blocked` entry is written to `audit_log`
+- Admin Command Center → System tab → Health card shows `admin_ip_allowlist_enabled: true` and count
+
+## 4. Two-Factor Authentication (TOTP)
+
+Built-in, no env setup needed. Each admin enables 2FA from their account:
+
+1. Log in at `/admin/login`
+2. Command Center → **System** tab → **Two-Factor Authentication (TOTP)** card → **Set up 2FA**
+3. Scan the QR code with Google Authenticator / 1Password / Authy / Bitwarden
+4. Enter the 6-digit code shown in the app → 2FA is activated
+5. Next login: after email+password, a second screen asks for the 6-digit code
+
+To disable: same card → **Disable** → enter current 6-digit code.
+
+Every 2FA event (setup, enabled, disabled, failed code) is written to `audit_log`.
+
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |
