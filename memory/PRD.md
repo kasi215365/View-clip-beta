@@ -26,6 +26,17 @@ A hybrid VOD + Live Streaming platform (Hulu/ESPN meets Twitch/Bigo-Live) brande
 
 ## Implemented (CHANGELOG)
 
+### 2026-02 (phase 6) — Production hardening (v1.4.0)
+- **TOTP secrets encrypted at rest** — `users.totp_secret` now stored as Fernet ciphertext; `admin_2fa_enable` encrypts, `admin_2fa_disable` + login decrypt transparently.
+- **10 one-time recovery codes** — issued in `XXXX-XXXX-XXXX` format on `2fa/enable` (returned ONCE), stored only as bcrypt hashes; admin login accepts a recovery code in `totp_code` and consumes it.
+- **`POST /api/admin/auth/2fa/recovery-codes/regenerate`** — requires a valid TOTP code; issues 10 fresh codes and invalidates the prior set.
+- **Key-rotation worker covers TOTP** — `/api/admin/system/rotate-keys` now also iterates `users`, re-encrypts every `totp_secret` with the new Fernet cipher; response reports `totp_rotated` / `totp_failed` counts.
+- **Anomaly alerts** — brute-force (≥3 failures in 5 min) + new-IP successful logins push `security_anomaly` notifications fanned out to every admin.
+- **Public probes** — `GET /api/health` (liveness) + `GET /api/ready` (readiness, 503 if any DB layer fails).
+- **X-Request-ID middleware** — every response carries an `X-Request-ID`; echoes any client-supplied header.
+- **Frontend**: Recovery-code reveal overlay on 2FA enable with Copy / Download .txt / "I've saved them" actions, Regenerate-codes flow with 6-digit confirmation, AdminLogin TOTP step accepts recovery codes (format hint + 20-char input), Notifications page renders `ShieldAlert` icon for `security_anomaly`.
+- **Version bumped** to `1.4.0`.
+
 ### 2026-02 (phase 5) — Admin security hardening
 - **TOTP 2FA** on admin login — `pyotp` + `qrcode` based; setup returns QR PNG + manual secret; `/api/admin/auth/login` returns `{require_2fa: true}` when code missing; verify step issues token. Setup/enable/disable/failed-code events all audit-logged.
 - **Admin Command Center → System → Two-Factor Authentication card** — scan-QR setup flow, enable/disable buttons, status indicator.
