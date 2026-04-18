@@ -2,8 +2,10 @@ import { useState, useEffect, useContext } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { AuthContext, API } from '@/App';
 import { Button } from '@/components/ui/button';
-import { Video, Play, Clock, LogOut, User as UserIcon, Radio, Megaphone } from 'lucide-react';
+import { Video, Play, Clock, LogOut, User as UserIcon, Radio, Megaphone, Search as SearchIcon, TrendingUp, Trophy } from 'lucide-react';
 import Logo from '@/components/Logo';
+import NotificationBell from '@/components/NotificationBell';
+import { Input } from '@/components/ui/input';
 import axios from 'axios';
 import { toast } from 'sonner';
 
@@ -12,13 +14,32 @@ const Browse = () => {
   const { user, logout } = useContext(AuthContext);
   const [content, setContent] = useState([]);
   const [promos, setPromos] = useState([]);
+  const [trending, setTrending] = useState({ content: [], live_streams: [] });
+  const [query, setQuery] = useState('');
+  const [searchResults, setSearchResults] = useState(null);
   const [selectedType, setSelectedType] = useState('all');
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     fetchContent();
     fetchPromos();
+    fetchTrending();
   }, [selectedType]);
+
+  useEffect(() => {
+    if (query.trim().length < 2) { setSearchResults(null); return; }
+    const t = setTimeout(async () => {
+      try {
+        const r = await axios.get(`${API}/search`, { params: { q: query } });
+        setSearchResults(r.data);
+      } catch (e) { /* noop */ }
+    }, 300);
+    return () => clearTimeout(t);
+  }, [query]);
+
+  const fetchTrending = async () => {
+    try { const r = await axios.get(`${API}/trending`); setTrending(r.data); } catch (e) { /* noop */ }
+  };
 
   const fetchContent = async () => {
     try {
@@ -78,6 +99,10 @@ const Browse = () => {
                 Admin
               </Button>
             )}
+            <Button data-testid="leaderboard-nav-btn" onClick={() => navigate('/leaderboard')} variant="ghost" className="text-white hover:text-cyan-400">
+              <Trophy className="w-4 h-4 mr-2" />Top 50
+            </Button>
+            <NotificationBell />
             <Button data-testid="profile-btn" onClick={() => navigate('/profile')} variant="ghost" className="text-white hover:text-cyan-400">
               <UserIcon className="w-4 h-4 mr-2" />
               Profile
@@ -94,8 +119,88 @@ const Browse = () => {
           {/* Header */}
           <div className="mb-8">
             <h1 className="text-4xl font-bold mb-4">Browse Content</h1>
-            <p className="text-gray-400">Discover movies, TV shows, and live sports</p>
+            <p className="text-gray-400 mb-6">Discover movies, TV shows, and live sports</p>
+            <div className="relative max-w-xl">
+              <SearchIcon className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-500" />
+              <input
+                data-testid="search-input"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Search movies, TV, streams, streamers…"
+                className="w-full pl-12 py-4 bg-white/5 border border-white/10 rounded-lg text-white text-base focus:outline-none focus:border-cyan-400/60"
+              />
+            </div>
           </div>
+
+          {searchResults && (
+            <div data-testid="search-results" className="mb-8 glass-panel rounded-xl p-6">
+              <h2 className="text-xl font-bold mb-4">Results for "{searchResults.query}"</h2>
+              {searchResults.content.length === 0 && searchResults.streams.length === 0 && searchResults.streamers.length === 0 ? (
+                <p className="text-gray-500">No results found.</p>
+              ) : (
+                <div className="space-y-4">
+                  {searchResults.content.length > 0 && (
+                    <div>
+                      <div className="text-xs text-gray-500 uppercase mb-2">Content ({searchResults.content.length})</div>
+                      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                        {searchResults.content.map((c) => (
+                          <div key={c.id} data-testid={`search-content-${c.id}`} onClick={() => navigate(`/watch/${c.id}`)} className="bg-white/5 hover:bg-white/10 rounded p-2 cursor-pointer">
+                            <div className="text-sm font-semibold truncate">{c.title}</div>
+                            <div className="text-xs text-gray-500">{c.type}</div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {searchResults.streams.length > 0 && (
+                    <div>
+                      <div className="text-xs text-gray-500 uppercase mb-2">Streams ({searchResults.streams.length})</div>
+                      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                        {searchResults.streams.map((s) => (
+                          <div key={s.id} data-testid={`search-stream-${s.id}`} onClick={() => navigate(`/stream/${s.id}`)} className="bg-white/5 hover:bg-white/10 rounded p-2 cursor-pointer">
+                            <div className="text-sm font-semibold truncate">{s.title}</div>
+                            <div className="text-xs text-gray-500">by {s.streamer_name}{s.is_live && <span className="ml-2 text-red-400">● LIVE</span>}</div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {searchResults.streamers.length > 0 && (
+                    <div>
+                      <div className="text-xs text-gray-500 uppercase mb-2">Streamers ({searchResults.streamers.length})</div>
+                      <div className="flex flex-wrap gap-2">
+                        {searchResults.streamers.map((u) => (
+                          <span key={u.id} data-testid={`search-streamer-${u.id}`} className="bg-cyan-400/10 text-cyan-400 px-3 py-1 rounded-full text-sm">{u.name}</span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          {!searchResults && trending.content.length > 0 && (
+            <div data-testid="trending-strip" className="mb-8">
+              <div className="flex items-center gap-2 mb-4">
+                <TrendingUp className="w-5 h-5 text-fuchsia-400" />
+                <h2 className="text-xl font-bold">Trending Now</h2>
+              </div>
+              <div className="flex gap-4 overflow-x-auto pb-4">
+                {trending.content.slice(0, 8).map((c) => (
+                  <div key={c.id} data-testid={`trending-${c.id}`} onClick={() => navigate(`/watch/${c.id}`)} className="flex-shrink-0 w-48 glass-panel rounded-lg overflow-hidden cursor-pointer hover:border-fuchsia-400/50">
+                    <div className="aspect-video bg-gradient-to-br from-fuchsia-500/20 to-cyan-500/20">
+                      <img src={c.thumbnail_url} alt="" className="w-full h-full object-cover" onError={(e) => e.target.style.display = 'none'} />
+                    </div>
+                    <div className="p-2">
+                      <div className="text-sm font-semibold truncate">{c.title}</div>
+                      <div className="text-xs text-gray-500">{c.views.toLocaleString()} views</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* Filter Tabs */}
           <div data-testid="filter-tabs" className="flex space-x-4 mb-8">

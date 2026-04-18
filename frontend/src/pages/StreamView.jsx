@@ -21,7 +21,10 @@ const StreamView = () => {
   const [loading, setLoading] = useState(true);
   const [hasJoined, setHasJoined] = useState(false);
   const [qualified, setQualified] = useState(false);
+  const [followStatus, setFollowStatus] = useState({ following: false, followers_count: 0 });
+  const [watchMinutes, setWatchMinutes] = useState(0);
   const scrollRef = useRef(null);
+  const heartbeatRef = useRef(null);
 
   useEffect(() => {
     (async () => {
@@ -29,8 +32,19 @@ const StreamView = () => {
       setLoading(false);
     })();
     const interval = setInterval(fetchComments, 5000);
-    return () => clearInterval(interval);
+    return () => {
+      clearInterval(interval);
+      if (heartbeatRef.current) clearInterval(heartbeatRef.current);
+    };
   }, [id]);
+
+  useEffect(() => {
+    if (stream?.streamer_id) {
+      axios.get(`${API}/streamers/${stream.streamer_id}/follow-status`)
+        .then((r) => setFollowStatus(r.data))
+        .catch(() => {});
+    }
+  }, [stream?.streamer_id]);
 
   useEffect(() => {
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
@@ -70,17 +84,31 @@ const StreamView = () => {
       setHasJoined(true);
       toast.success('Joined stream');
       fetchStream();
-      // 30-min watch threshold → qualified view (backend uses this for $0.005 payout)
-      setTimeout(async () => {
+      // Start server-side heartbeat every 60s — server accumulates watch minutes
+      // and auto-qualifies the view when threshold (30min) is reached.
+      heartbeatRef.current = setInterval(async () => {
         try {
-          await axios.post(`${API}/streams/${id}/qualified-view`);
-          setQualified(true);
-          toast.success('Watch time qualified — streamer earns $0.005 on your view');
+          const r = await axios.post(`${API}/streams/${id}/heartbeat`);
+          setWatchMinutes(r.data.minutes || 0);
+          if (r.data.qualified && !qualified) {
+            setQualified(true);
+            toast.success('Watch time qualified — streamer earns $0.005 on your view');
+          }
         } catch (e) { /* noop */ }
-      }, 30 * 60 * 1000);
+      }, 60 * 1000);
     } catch (e) {
       toast.error(e.response?.data?.detail || 'Failed to join stream');
     }
+  };
+
+  const toggleFollow = async () => {
+    if (!stream?.streamer_id) return;
+    try {
+      const endpoint = followStatus.following ? 'unfollow' : 'follow';
+      const r = await axios.post(`${API}/streamers/${stream.streamer_id}/${endpoint}`);
+      setFollowStatus({ following: r.data.following, followers_count: followStatus.followers_count + (r.data.following ? 1 : -1) });
+      toast.success(r.data.following ? `Following ${stream.streamer_name}` : `Unfollowed`);
+    } catch (e) { toast.error('Failed'); }
   };
 
   const handleSendComment = async (e) => {
@@ -155,7 +183,16 @@ const StreamView = () => {
                 <div className="flex items-start justify-between mb-4">
                   <div>
                     <h1 className="text-2xl font-bold mb-2">{stream.title}</h1>
-                    <p className="text-cyan-400 flex items-center"><Users className="w-4 h-4 mr-2" />{stream.streamer_name}</p>
+                    <div className="flex items-center gap-3">
+                      <p className="text-cyan-400 flex items-center"><Users className="w-4 h-4 mr-2" />{stream.streamer_name}</p>
+                      <span className="text-xs text-gray-500">{followStatus.followers_count} followers</span>
+                      {user?.id !== stream.streamer_id && (
+                        <Button data-testid="follow-btn" onClick={toggleFollow} size="sm"
+                          className={followStatus.following ? 'bg-white/10 hover:bg-white/20 text-white' : 'bg-fuchsia-500 hover:bg-fuchsia-600 text-white'}>
+                          {followStatus.following ? 'Following' : '+ Follow'}
+                        </Button>
+                      )}
+                    </div>
                   </div>
                   <div className="text-right">
                     {stream.is_live && (
@@ -164,6 +201,7 @@ const StreamView = () => {
                       </div>
                     )}
                     <div className="text-gray-400 text-sm">{stream.views.toLocaleString()} views</div>
+                    {hasJoined && !qualified && <div className="text-cyan-400 text-xs mt-1">Watch: {watchMinutes} min</div>}
                     {qualified && <div className="text-green-400 text-xs mt-1">✓ Your view qualified</div>}
                   </div>
                 </div>

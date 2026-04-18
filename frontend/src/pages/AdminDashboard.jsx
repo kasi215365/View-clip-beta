@@ -9,6 +9,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Upload, LogOut, User as UserIcon, Home, Radio, Shield, Settings as SettingsIcon, Banknote, AlertTriangle, Megaphone, Users2, BarChart3, Trash2 } from 'lucide-react';
 import Logo from '@/components/Logo';
+import NotificationBell from '@/components/NotificationBell';
 import axios from 'axios';
 import { toast } from 'sonner';
 
@@ -127,6 +128,7 @@ const AdminDashboard = () => {
             <Button data-testid="browse-nav-btn" onClick={() => navigate('/browse')} variant="ghost" className="text-white hover:text-cyan-400"><Home className="w-4 h-4 mr-2" />Browse</Button>
             <Button data-testid="live-nav-btn" onClick={() => navigate('/live')} variant="ghost" className="text-white hover:text-cyan-400"><Radio className="w-4 h-4 mr-2" />Live</Button>
             <Button data-testid="admin-nav-btn" onClick={() => navigate('/admin')} variant="ghost" className="text-cyan-400">Admin</Button>
+            <NotificationBell />
             <Button data-testid="profile-nav-btn" onClick={() => navigate('/profile')} variant="ghost" className="text-white hover:text-cyan-400"><UserIcon className="w-4 h-4 mr-2" />Profile</Button>
             <Button data-testid="logout-nav-btn" onClick={logout} variant="ghost" className="text-white hover:text-red-400"><LogOut className="w-4 h-4" /></Button>
           </div>

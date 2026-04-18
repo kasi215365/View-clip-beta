@@ -3,8 +3,9 @@ import { useNavigate } from 'react-router-dom';
 import { AuthContext, API } from '@/App';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
-import { User as UserIcon, CreditCard, CheckCircle, XCircle, LogOut, Home, Radio, Wallet, Gift as GiftIcon, Banknote } from 'lucide-react';
+import { User as UserIcon, CreditCard, CheckCircle, XCircle, LogOut, Home, Radio, Wallet, Gift as GiftIcon, Banknote, Trophy, Copy } from 'lucide-react';
 import Logo from '@/components/Logo';
+import NotificationBell from '@/components/NotificationBell';
 import axios from 'axios';
 import { toast } from 'sonner';
 
@@ -14,6 +15,7 @@ const Profile = () => {
   const [subscription, setSubscription] = useState(null);
   const [tiers, setTiers] = useState([]);
   const [wallet, setWallet] = useState({});
+  const [referral, setReferral] = useState(null);
   const [loading, setLoading] = useState(false);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [isBundleOpen, setIsBundleOpen] = useState(false);
@@ -22,19 +24,28 @@ const Profile = () => {
   useEffect(() => {
     (async () => {
       try {
-        const [sub, t, w] = await Promise.all([
+        const [sub, t, w, ref] = await Promise.all([
           axios.get(`${API}/subscriptions/status`),
           axios.get(`${API}/gifts/tiers`),
           axios.get(`${API}/gifts/wallet`),
+          axios.get(`${API}/referrals/my`),
         ]);
         if (sub.data.has_subscription) setSubscription(sub.data.subscription);
         setTiers(t.data.tiers || []);
         setWallet(w.data.wallet || {});
+        setReferral(ref.data);
       } catch (e) {
         console.error(e);
       }
     })();
   }, []);
+
+  const copyReferralLink = () => {
+    if (!referral) return;
+    const link = `${window.location.origin}/auth?ref=${referral.code}`;
+    navigator.clipboard.writeText(link);
+    toast.success('Referral link copied');
+  };
 
   const handleSubscribe = async () => {
     setLoading(true);
@@ -93,6 +104,8 @@ const Profile = () => {
             {user?.role === 'admin' && (
               <Button data-testid="admin-nav-btn" onClick={() => navigate('/admin')} variant="ghost" className="text-white hover:text-cyan-400">Admin</Button>
             )}
+            <Button data-testid="leaderboard-nav-btn" onClick={() => navigate('/leaderboard')} variant="ghost" className="text-white hover:text-cyan-400"><Trophy className="w-4 h-4 mr-2" />Top 50</Button>
+            <NotificationBell />
             <Button data-testid="profile-nav-btn" onClick={() => navigate('/profile')} variant="ghost" className="text-cyan-400">
               <UserIcon className="w-4 h-4 mr-2" /> Profile
             </Button>
@@ -198,6 +211,47 @@ const Profile = () => {
               </div>
             )}
           </div>
+
+          {/* Referral Card */}
+          {referral && (
+            <div data-testid="referral-card" className="glass-panel rounded-xl p-8 mb-8 border-amber-400/30">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-2xl font-bold flex items-center"><Trophy className="w-6 h-6 mr-3 text-amber-400" />Referrals</h2>
+                <Button data-testid="view-leaderboard-btn" onClick={() => navigate('/leaderboard')} className="bg-amber-500 hover:bg-amber-600 text-[#05070F]">View Leaderboard</Button>
+              </div>
+              <p className="text-gray-400 mb-4">Share your code. When someone you refer subscribes, you earn <span className="text-amber-400 font-semibold">10%</span> commission.</p>
+              <div className="grid md:grid-cols-3 gap-4 mb-4">
+                <div className="bg-white/5 rounded-lg p-4">
+                  <div className="text-xs text-gray-400 mb-1">Your Code</div>
+                  <div data-testid="referral-code" className="font-mono text-2xl font-bold text-cyan-400 flex items-center gap-2">
+                    {referral.code}
+                    <button data-testid="copy-referral-btn" onClick={copyReferralLink} className="text-gray-400 hover:text-cyan-400"><Copy className="w-4 h-4" /></button>
+                  </div>
+                </div>
+                <div className="bg-white/5 rounded-lg p-4">
+                  <div className="text-xs text-gray-400 mb-1">People Referred</div>
+                  <div data-testid="referral-count" className="text-2xl font-bold">{referral.referred_count}</div>
+                </div>
+                <div className="bg-white/5 rounded-lg p-4">
+                  <div className="text-xs text-gray-400 mb-1">Earnings</div>
+                  <div data-testid="referral-earnings" className="text-2xl font-bold text-green-400">${referral.earnings.toFixed(2)}</div>
+                </div>
+              </div>
+              {referral.events && referral.events.length > 0 && (
+                <div className="mt-4">
+                  <div className="text-xs text-gray-400 mb-2">Recent rewards</div>
+                  <div className="space-y-1 max-h-40 overflow-y-auto">
+                    {referral.events.map((e) => (
+                      <div key={e.id} className="flex justify-between text-sm bg-white/5 rounded px-3 py-2">
+                        <span>{e.sub_type} subscription ({new Date(e.created_at).toLocaleDateString()})</span>
+                        <span className="text-green-400 font-semibold">+${e.amount.toFixed(2)}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Gift Wallet */}
           <div data-testid="gift-wallet-card" className="glass-panel rounded-xl p-8 mb-8">

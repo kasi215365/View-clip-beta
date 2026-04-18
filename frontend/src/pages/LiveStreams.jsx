@@ -2,8 +2,9 @@ import { useState, useEffect, useContext } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { AuthContext, API } from '@/App';
 import { Button } from '@/components/ui/button';
-import { Video, Radio, Users, Eye, LogOut, User as UserIcon, Home } from 'lucide-react';
+import { Video, Radio, Users, Eye, LogOut, User as UserIcon, Home, Trophy } from 'lucide-react';
 import Logo from '@/components/Logo';
+import NotificationBell from '@/components/NotificationBell';
 import axios from 'axios';
 import { toast } from 'sonner';
 
@@ -56,6 +57,8 @@ const LiveStreams = () => {
               <UserIcon className="w-4 h-4 mr-2" />
               Profile
             </Button>
+            <Button data-testid="leaderboard-nav-btn" onClick={() => navigate('/leaderboard')} variant="ghost" className="text-white hover:text-cyan-400"><Trophy className="w-4 h-4 mr-2" />Top 50</Button>
+            <NotificationBell />
             <Button data-testid="logout-nav-btn" onClick={logout} variant="ghost" className="text-white hover:text-red-400">
               <LogOut className="w-4 h-4" />
             </Button>

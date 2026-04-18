@@ -6,8 +6,10 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
-import { Radio, DollarSign, Eye, Gift, LogOut, User as UserIcon, Home, Save, Upload, Youtube, Twitch } from 'lucide-react';
+import { Radio, DollarSign, Eye, Gift, LogOut, User as UserIcon, Home, Save, Upload, Youtube, Twitch, BarChart3, Users2, Heart } from 'lucide-react';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import Logo from '@/components/Logo';
+import NotificationBell from '@/components/NotificationBell';
 import axios from 'axios';
 import { toast } from 'sonner';
 
@@ -17,6 +19,7 @@ const StreamerDashboard = () => {
   const [myStreams, setMyStreams] = useState([]);
   const [earnings, setEarnings] = useState([]);
   const [totalEarnings, setTotalEarnings] = useState(0);
+  const [analytics, setAnalytics] = useState(null);
   const [loading, setLoading] = useState(true);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [exportStream, setExportStream] = useState(null); // stream object for export modal
@@ -26,14 +29,16 @@ const StreamerDashboard = () => {
 
   const fetchData = async () => {
     try {
-      const [streamsRes, earningsRes, totalRes] = await Promise.all([
+      const [streamsRes, earningsRes, totalRes, analyticsRes] = await Promise.all([
         axios.get(`${API}/streams`),
         axios.get(`${API}/earnings`),
         axios.get(`${API}/earnings/total`),
+        axios.get(`${API}/streamers/me/analytics`),
       ]);
       setMyStreams(streamsRes.data.filter((s) => s.streamer_id === user.id));
       setEarnings(earningsRes.data);
       setTotalEarnings(totalRes.data.total_earnings);
+      setAnalytics(analyticsRes.data);
     } catch (e) {
       toast.error('Failed to load dashboard data');
     } finally {
@@ -96,6 +101,7 @@ const StreamerDashboard = () => {
             <Button data-testid="browse-nav-btn" onClick={() => navigate('/browse')} variant="ghost" className="text-white hover:text-cyan-400"><Home className="w-4 h-4 mr-2" />Browse</Button>
             <Button data-testid="live-nav-btn" onClick={() => navigate('/live')} variant="ghost" className="text-white hover:text-cyan-400"><Radio className="w-4 h-4 mr-2" />Live</Button>
             <Button data-testid="dashboard-nav-btn" onClick={() => navigate('/streamer')} variant="ghost" className="text-cyan-400">Dashboard</Button>
+            <NotificationBell />
             <Button data-testid="profile-nav-btn" onClick={() => navigate('/profile')} variant="ghost" className="text-white hover:text-cyan-400"><UserIcon className="w-4 h-4 mr-2" />Profile</Button>
             <Button data-testid="logout-nav-btn" onClick={logout} variant="ghost" className="text-white hover:text-red-400"><LogOut className="w-4 h-4" /></Button>
           </div>
@@ -161,6 +167,98 @@ const StreamerDashboard = () => {
               <p className="text-gray-400 text-sm">{myStreams.reduce((s, x) => s + (x.qualified_views || 0), 0).toLocaleString()} qualified</p>
             </div>
           </div>
+
+          {/* Analytics */}
+          {analytics && (
+            <div data-testid="analytics-section" className="mb-8">
+              <div className="flex items-center gap-3 mb-6">
+                <BarChart3 className="w-6 h-6 text-fuchsia-400" />
+                <h2 className="text-2xl font-bold">Analytics</h2>
+                <span className="text-sm text-gray-500">Last 30 days</span>
+              </div>
+              <div className="grid lg:grid-cols-3 gap-6">
+                <div data-testid="analytics-followers" className="glass-panel rounded-xl p-5">
+                  <div className="flex items-center gap-2 mb-3"><Heart className="w-5 h-5 text-fuchsia-400" /><span className="text-sm text-gray-400">Followers</span></div>
+                  <div className="text-3xl font-bold">{analytics.followers}</div>
+                </div>
+                <div data-testid="analytics-earnings-views" className="glass-panel rounded-xl p-5">
+                  <div className="text-sm text-gray-400 mb-3">Views earnings</div>
+                  <div className="text-3xl font-bold text-cyan-400">${(analytics.by_source?.views?.total || 0).toFixed(3)}</div>
+                  <div className="text-xs text-gray-500 mt-1">{analytics.by_source?.views?.count || 0} stream ends</div>
+                </div>
+                <div data-testid="analytics-earnings-gifts" className="glass-panel rounded-xl p-5">
+                  <div className="text-sm text-gray-400 mb-3">Gift earnings</div>
+                  <div className="text-3xl font-bold text-fuchsia-400">${(analytics.by_source?.gifts?.total || 0).toFixed(3)}</div>
+                  <div className="text-xs text-gray-500 mt-1">{analytics.by_source?.gifts?.count || 0} gifts</div>
+                </div>
+              </div>
+
+              <div className="grid lg:grid-cols-2 gap-6 mt-6">
+                <div data-testid="analytics-top-gifters" className="glass-panel rounded-xl p-6">
+                  <h3 className="text-lg font-bold mb-4 flex items-center gap-2"><Users2 className="w-5 h-5 text-cyan-400" />Top Gifters</h3>
+                  {analytics.top_gifters.length === 0 ? (
+                    <p className="text-gray-500 text-sm">No gifts received yet.</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {analytics.top_gifters.map((g, i) => (
+                        <div key={g.sender_id} data-testid={`top-gifter-${i}`} className="flex justify-between items-center bg-white/5 rounded px-3 py-2">
+                          <div className="flex items-center gap-3">
+                            <span className="text-gray-500 text-sm w-6">#{i + 1}</span>
+                            <span className="font-semibold">{g.name}</span>
+                          </div>
+                          <div className="text-right">
+                            <div className="text-fuchsia-400 font-bold">${g.total_value.toFixed(3)}</div>
+                            <div className="text-xs text-gray-500">{g.count} gifts</div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <div data-testid="analytics-gift-tiers" className="glass-panel rounded-xl p-6">
+                  <h3 className="text-lg font-bold mb-4 flex items-center gap-2"><Gift className="w-5 h-5 text-fuchsia-400" />Gift Tier Breakdown</h3>
+                  {analytics.gift_tiers.length === 0 ? (
+                    <p className="text-gray-500 text-sm">No gifts received yet.</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {analytics.gift_tiers.map((t) => (
+                        <div key={t.tier_id} data-testid={`tier-row-${t.tier_id}`} className="flex justify-between items-center bg-white/5 rounded px-3 py-2">
+                          <div className="flex items-center gap-3">
+                            <span className="text-2xl">{t.emoji}</span>
+                            <div>
+                              <div className="font-semibold">{t.name}</div>
+                              <div className="text-xs text-gray-500">{t.count} units</div>
+                            </div>
+                          </div>
+                          <div className="text-fuchsia-400 font-bold">${t.value.toFixed(3)}</div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {analytics.time_series.length > 0 && (
+                <div data-testid="analytics-timeseries" className="glass-panel rounded-xl p-6 mt-6">
+                  <h3 className="text-lg font-bold mb-4">Earnings (daily)</h3>
+                  <div className="flex items-end gap-1 h-40">
+                    {analytics.time_series.map((pt) => {
+                      const max = Math.max(...analytics.time_series.map((p) => p.amount)) || 1;
+                      const height = Math.max(4, (pt.amount / max) * 100);
+                      return (
+                        <div key={pt.date} className="flex-1 group relative flex flex-col items-center">
+                          <div className="w-full bg-gradient-to-t from-cyan-500 to-fuchsia-500 rounded-t" style={{ height: `${height}%` }}></div>
+                          <div className="absolute -top-8 opacity-0 group-hover:opacity-100 text-xs bg-black px-2 py-1 rounded whitespace-nowrap">
+                            {pt.date}: ${pt.amount.toFixed(3)}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Streams */}
           <div className="mb-8">

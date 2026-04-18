@@ -79,6 +79,7 @@ class UserRegister(BaseModel):
     password: str
     name: str
     role: str = "viewer"
+    referral_code: Optional[str] = None
 
 class UserLogin(BaseModel):
     email: EmailStr
@@ -95,6 +96,9 @@ class User(BaseModel):
     created_at: str
     gift_wallet: Dict[str, int] = Field(default_factory=dict)  # tier_id -> units
     connect_account_status: str = "not_onboarded"  # not_onboarded, pending, active
+    referral_code: Optional[str] = None
+    referred_by: Optional[str] = None
+    referral_earnings: float = 0.0
 
 class Content(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -252,6 +256,25 @@ async def get_settings() -> Dict[str, Any]:
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
+def _generate_referral_code(name: str, user_id: str) -> str:
+    """Generate a short referral code based on name + uuid."""
+    prefix = ''.join([c for c in (name or '').upper() if c.isalnum()])[:4] or "VC"
+    suffix = user_id.replace("-", "")[:6].upper()
+    return f"{prefix}{suffix}"
+
+async def _notify(user_id: str, notification_type: str, title: str, body: str, data: Optional[Dict[str, Any]] = None):
+    """Insert a notification document for a single user."""
+    await db.notifications.insert_one({
+        "id": str(uuid.uuid4()),
+        "user_id": user_id,
+        "type": notification_type,
+        "title": title,
+        "body": body,
+        "data": data or {},
+        "read": False,
+        "created_at": now_iso(),
+    })
+
 def get_stripe_checkout(request: Request) -> StripeCheckout:
     host_url = str(request.base_url).rstrip('/')
     webhook_url = f"{host_url}/api/webhook/stripe"
@@ -266,6 +289,14 @@ async def register(user_data: UserRegister):
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
     user_id = str(uuid.uuid4())
+
+    # Resolve referral attribution (if valid code provided)
+    referred_by = None
+    if user_data.referral_code:
+        referrer = await db.users.find_one({"referral_code": user_data.referral_code.upper()})
+        if referrer:
+            referred_by = referrer["id"]
+
     user_doc = {
         "id": user_id,
         "email": user_data.email,
@@ -277,8 +308,13 @@ async def register(user_data: UserRegister):
         "created_at": now_iso(),
         "gift_wallet": {},
         "connect_account_status": "not_onboarded",
+        "referral_code": _generate_referral_code(user_data.name, user_id),
+        "referred_by": referred_by,
+        "referral_earnings": 0.0,
     }
     await db.users.insert_one(user_doc)
+    if referred_by:
+        await db.users.update_one({"id": referred_by}, {"$inc": {"referral_count": 1}})
     token = create_token(user_id, user_data.email, user_data.role)
     return {
         "token": token,
@@ -403,6 +439,13 @@ async def create_stream(stream_data: LiveStreamCreate, current_user: User = Depe
         "exports": [],
     }
     await db.live_streams.insert_one(stream_doc.copy())
+    # Notify all followers of this streamer
+    followers = await db.follows.find({"streamer_id": current_user.id}, {"_id": 0, "follower_id": 1}).to_list(10000)
+    for f in followers:
+        await _notify(f["follower_id"], "stream_live",
+                      f"{current_user.name} is live",
+                      stream_data.title,
+                      {"stream_id": stream_id, "streamer_id": current_user.id})
     return LiveStream(**stream_doc)
 
 @api_router.post("/streams/{stream_id}/end")
@@ -443,11 +486,41 @@ async def join_stream(stream_id: str, current_user: User = Depends(get_current_u
         raise HTTPException(status_code=404, detail="Stream not found or not live")
     return {"message": "Joined stream"}
 
+@api_router.post("/streams/{stream_id}/heartbeat")
+async def stream_heartbeat(stream_id: str, current_user: User = Depends(get_current_user)):
+    """Client sends a heartbeat every 60s while watching. Server accumulates watch-minutes.
+    At the view_threshold_minutes mark, increments qualified_views exactly once per viewer per stream."""
+    settings = await get_settings()
+    threshold = int(settings["view_threshold_minutes"])
+    stream = await db.live_streams.find_one({"id": stream_id})
+    if not stream:
+        raise HTTPException(status_code=404, detail="Stream not found")
+
+    key = {"stream_id": stream_id, "user_id": current_user.id}
+    session = await db.watch_sessions.find_one(key)
+    if not session:
+        session = {**key, "minutes": 0, "qualified": False, "started_at": now_iso()}
+        await db.watch_sessions.insert_one(session.copy())
+
+    if session.get("qualified"):
+        return {"minutes": session["minutes"], "qualified": True, "threshold": threshold}
+
+    new_minutes = int(session["minutes"]) + 1
+    update = {"minutes": new_minutes, "last_seen": now_iso()}
+    qualified_now = False
+    if new_minutes >= threshold and not session.get("qualified"):
+        update["qualified"] = True
+        update["qualified_at"] = now_iso()
+        qualified_now = True
+
+    await db.watch_sessions.update_one(key, {"$set": update})
+    if qualified_now:
+        await db.live_streams.update_one({"id": stream_id}, {"$inc": {"qualified_views": 1}})
+    return {"minutes": new_minutes, "qualified": qualified_now or session.get("qualified", False), "threshold": threshold}
+
 @api_router.post("/streams/{stream_id}/qualified-view")
 async def qualified_view(stream_id: str, current_user: User = Depends(get_current_user)):
-    """Client calls this after 30 minutes of continuous watch to qualify the view for payout."""
-    settings = await get_settings()
-    _ = settings["view_threshold_minutes"]  # enforced client-side
+    """DEPRECATED: Legacy endpoint for backward compat. Prefer /heartbeat."""
     result = await db.live_streams.update_one(
         {"id": stream_id},
         {"$inc": {"qualified_views": 1}}
@@ -574,6 +647,10 @@ async def send_gift(body: GiftSend, current_user: User = Depends(get_current_use
         "description": f"{body.quantity}x {tier['emoji']} {tier['name']} from {current_user.name}",
         "created_at": now_iso()
     })
+    await _notify(stream['streamer_id'], "gift_received",
+                  f"{tier['emoji']} Gift from {current_user.name}",
+                  f"{body.quantity}x {tier['name']} (+${earnings:.3f})",
+                  {"stream_id": body.stream_id, "amount": earnings})
     return {"message": "Gift sent", "gift": gift_doc, "streamer_earned": earnings}
 
 # =============================================================================
@@ -728,6 +805,26 @@ async def _fulfill_payment(tx: Dict[str, Any]):
         if sub_type == "streamer":
             update["role"] = "streamer"
         await db.users.update_one({"id": user_id}, {"$set": update})
+
+        # Referral 10% rev-share credit on first-ever paid subscription
+        user = await db.users.find_one({"id": user_id})
+        prior_subs = await db.subscriptions.count_documents({"user_id": user_id, "status": "active"})
+        referrer_id = (user or {}).get("referred_by")
+        if referrer_id and prior_subs <= 1:  # this one just inserted
+            commission = round(float(tx["amount"]) * 0.10, 4)
+            await db.users.update_one({"id": referrer_id}, {"$inc": {"referral_earnings": commission}})
+            await db.referral_events.insert_one({
+                "id": str(uuid.uuid4()),
+                "referrer_id": referrer_id,
+                "referred_user_id": user_id,
+                "amount": commission,
+                "source_amount": float(tx["amount"]),
+                "sub_type": sub_type,
+                "created_at": now_iso(),
+            })
+            await _notify(referrer_id, "referral", "Referral reward!",
+                          f"You earned ${commission} from a {sub_type} subscription.",
+                          {"amount": commission})
     elif purpose == "gift_bundle":
         tier_id = tx["metadata"]["tier_id"]
         qty = int(tx["metadata"]["qty"])
@@ -887,6 +984,229 @@ async def admin_trigger_payouts(_admin: User = Depends(require_admin)):
 async def admin_list_payouts(_admin: User = Depends(require_admin)):
     payouts = await db.payouts.find({}, {"_id": 0}).sort("processed_at", -1).to_list(1000)
     return {"payouts": payouts}
+
+# =============================================================================
+# REFERRALS
+# =============================================================================
+@api_router.get("/referrals/my")
+async def my_referrals(current_user: User = Depends(get_current_user)):
+    user = await db.users.find_one({"id": current_user.id}, {"_id": 0, "referral_code": 1, "referral_earnings": 1})
+    # Backfill missing code for legacy users
+    code = (user or {}).get("referral_code")
+    if not code:
+        code = _generate_referral_code(current_user.name, current_user.id)
+        await db.users.update_one({"id": current_user.id}, {"$set": {"referral_code": code}})
+    referred_users = await db.users.count_documents({"referred_by": current_user.id})
+    events = await db.referral_events.find({"referrer_id": current_user.id}, {"_id": 0}).sort("created_at", -1).to_list(100)
+    return {
+        "code": code,
+        "referred_count": referred_users,
+        "earnings": round(float((user or {}).get("referral_earnings", 0.0)), 4),
+        "events": events,
+    }
+
+@api_router.get("/referrals/leaderboard")
+async def referral_leaderboard():
+    """Top 50 referrers by referral_earnings. Public — no auth required."""
+    pipeline = [
+        {"$match": {"referral_earnings": {"$gt": 0}}},
+        {"$sort": {"referral_earnings": -1}},
+        {"$limit": 50},
+        {"$project": {"_id": 0, "name": 1, "referral_code": 1, "referral_earnings": 1, "role": 1}},
+    ]
+    rows = await db.users.aggregate(pipeline).to_list(50)
+    # add referred_count
+    enriched = []
+    for i, r in enumerate(rows):
+        count = await db.users.count_documents({"referred_by": (await db.users.find_one({"referral_code": r["referral_code"]}, {"_id": 0, "id": 1}))["id"]})
+        enriched.append({**r, "rank": i + 1, "referred_count": count, "earnings": round(r["referral_earnings"], 2)})
+    return {"leaderboard": enriched}
+
+@api_router.get("/referrals/validate/{code}")
+async def validate_referral_code(code: str):
+    user = await db.users.find_one({"referral_code": code.upper()}, {"_id": 0, "name": 1})
+    if not user:
+        return {"valid": False}
+    return {"valid": True, "referrer_name": user["name"]}
+
+# =============================================================================
+# FOLLOW / UNFOLLOW STREAMERS
+# =============================================================================
+@api_router.post("/streamers/{streamer_id}/follow")
+async def follow_streamer(streamer_id: str, current_user: User = Depends(get_current_user)):
+    if streamer_id == current_user.id:
+        raise HTTPException(status_code=400, detail="Cannot follow yourself")
+    streamer = await db.users.find_one({"id": streamer_id}, {"_id": 0, "name": 1, "role": 1})
+    if not streamer:
+        raise HTTPException(status_code=404, detail="Streamer not found")
+
+    existing = await db.follows.find_one({"follower_id": current_user.id, "streamer_id": streamer_id})
+    if existing:
+        return {"message": "Already following", "following": True}
+
+    await db.follows.insert_one({
+        "id": str(uuid.uuid4()),
+        "follower_id": current_user.id,
+        "streamer_id": streamer_id,
+        "created_at": now_iso(),
+    })
+    await _notify(streamer_id, "new_follower",
+                  "New follower!",
+                  f"{current_user.name} started following you.",
+                  {"follower_id": current_user.id})
+    return {"message": "Followed", "following": True}
+
+@api_router.post("/streamers/{streamer_id}/unfollow")
+async def unfollow_streamer(streamer_id: str, current_user: User = Depends(get_current_user)):
+    res = await db.follows.delete_one({"follower_id": current_user.id, "streamer_id": streamer_id})
+    return {"message": "Unfollowed" if res.deleted_count else "Was not following", "following": False}
+
+@api_router.get("/streamers/{streamer_id}/follow-status")
+async def follow_status(streamer_id: str, current_user: User = Depends(get_current_user)):
+    exists = await db.follows.find_one({"follower_id": current_user.id, "streamer_id": streamer_id})
+    followers = await db.follows.count_documents({"streamer_id": streamer_id})
+    return {"following": exists is not None, "followers_count": followers}
+
+@api_router.get("/users/me/follows")
+async def my_follows(current_user: User = Depends(get_current_user)):
+    rows = await db.follows.find({"follower_id": current_user.id}, {"_id": 0}).sort("created_at", -1).to_list(1000)
+    # Enrich with streamer info
+    out = []
+    for r in rows:
+        s = await db.users.find_one({"id": r["streamer_id"]}, {"_id": 0, "id": 1, "name": 1, "role": 1})
+        if s:
+            # find latest live stream by this streamer
+            live = await db.live_streams.find_one({"streamer_id": r["streamer_id"], "is_live": True}, {"_id": 0})
+            out.append({**s, "followed_at": r["created_at"], "live_stream_id": (live or {}).get("id")})
+    return {"follows": out}
+
+# =============================================================================
+# NOTIFICATIONS
+# =============================================================================
+@api_router.get("/notifications")
+async def list_notifications(current_user: User = Depends(get_current_user)):
+    rows = await db.notifications.find({"user_id": current_user.id}, {"_id": 0}).sort("created_at", -1).to_list(200)
+    unread = sum(1 for r in rows if not r.get("read"))
+    return {"notifications": rows, "unread_count": unread}
+
+@api_router.post("/notifications/{notification_id}/read")
+async def mark_notification_read(notification_id: str, current_user: User = Depends(get_current_user)):
+    res = await db.notifications.update_one(
+        {"id": notification_id, "user_id": current_user.id},
+        {"$set": {"read": True}}
+    )
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Notification not found")
+    return {"message": "marked read"}
+
+@api_router.post("/notifications/read-all")
+async def mark_all_read(current_user: User = Depends(get_current_user)):
+    res = await db.notifications.update_many(
+        {"user_id": current_user.id, "read": False},
+        {"$set": {"read": True}}
+    )
+    return {"message": "all marked read", "count": res.modified_count}
+
+# =============================================================================
+# SEARCH
+# =============================================================================
+@api_router.get("/search")
+async def search(q: str):
+    """Unified search across content, streams and streamers."""
+    q_str = (q or "").strip()
+    if len(q_str) < 2:
+        return {"content": [], "streams": [], "streamers": [], "query": q_str}
+    regex = {"$regex": q_str, "$options": "i"}
+    content = await db.content.find(
+        {"$or": [{"title": regex}, {"description": regex}], "is_promo": {"$ne": True}},
+        {"_id": 0}
+    ).limit(20).to_list(20)
+    streams = await db.live_streams.find(
+        {"$or": [{"title": regex}, {"description": regex}, {"streamer_name": regex}]},
+        {"_id": 0}
+    ).sort("start_time", -1).limit(20).to_list(20)
+    streamers = await db.users.find(
+        {"role": {"$in": ["streamer", "admin"]}, "name": regex},
+        {"_id": 0, "password_hash": 0}
+    ).limit(20).to_list(20)
+    return {"content": content, "streams": streams, "streamers": streamers, "query": q_str}
+
+# =============================================================================
+# TRENDING
+# =============================================================================
+@api_router.get("/trending")
+async def trending():
+    """Top VOD content and live streams ranked by views."""
+    content = await db.content.find({"is_promo": {"$ne": True}}, {"_id": 0}).sort("views", -1).limit(12).to_list(12)
+    streams = await db.live_streams.find({"is_live": True}, {"_id": 0}).sort("viewers_count", -1).limit(12).to_list(12)
+    return {"content": content, "live_streams": streams}
+
+# =============================================================================
+# STREAMER ANALYTICS
+# =============================================================================
+@api_router.get("/streamers/me/analytics")
+async def my_analytics(current_user: User = Depends(get_current_user)):
+    if current_user.role not in ("streamer", "admin"):
+        raise HTTPException(status_code=403, detail="Streamer access required")
+
+    # Earnings breakdown
+    by_source_pipe = [
+        {"$match": {"streamer_id": current_user.id}},
+        {"$group": {"_id": "$source", "total": {"$sum": "$amount"}, "count": {"$sum": 1}}},
+    ]
+    by_source = {r["_id"]: {"total": round(r["total"], 4), "count": r["count"]}
+                 for r in await db.earnings.aggregate(by_source_pipe).to_list(10)}
+
+    # 30-day earnings time-series
+    since = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+    ts_pipe = [
+        {"$match": {"streamer_id": current_user.id, "created_at": {"$gte": since}}},
+        {"$project": {"day": {"$substr": ["$created_at", 0, 10]}, "amount": 1}},
+        {"$group": {"_id": "$day", "total": {"$sum": "$amount"}}},
+        {"$sort": {"_id": 1}},
+    ]
+    series = [{"date": r["_id"], "amount": round(r["total"], 4)} for r in await db.earnings.aggregate(ts_pipe).to_list(40)]
+
+    # Top 10 gifters
+    gifters_pipe = [
+        {"$match": {"streamer_id": current_user.id}},
+        {"$group": {"_id": "$sender_id", "sender_name": {"$first": "$sender_name"}, "total_value": {"$sum": "$value"}, "count": {"$sum": "$quantity"}}},
+        {"$sort": {"total_value": -1}},
+        {"$limit": 10},
+    ]
+    top_gifters = [{"sender_id": r["_id"], "name": r["sender_name"], "total_value": round(r["total_value"], 3), "count": r["count"]}
+                   for r in await db.gifts.aggregate(gifters_pipe).to_list(10)]
+
+    # Gift tier breakdown
+    tiers_pipe = [
+        {"$match": {"streamer_id": current_user.id}},
+        {"$group": {"_id": "$tier_id", "emoji": {"$first": "$tier_emoji"}, "name": {"$first": "$tier_name"}, "count": {"$sum": "$quantity"}, "value": {"$sum": "$value"}}},
+        {"$sort": {"value": -1}},
+    ]
+    tiers = [{"tier_id": r["_id"], "emoji": r["emoji"], "name": r["name"], "count": r["count"], "value": round(r["value"], 3)}
+             for r in await db.gifts.aggregate(tiers_pipe).to_list(10)]
+
+    # Streams summary
+    total_streams = await db.live_streams.count_documents({"streamer_id": current_user.id})
+    live_now = await db.live_streams.count_documents({"streamer_id": current_user.id, "is_live": True})
+    views_pipe = [
+        {"$match": {"streamer_id": current_user.id}},
+        {"$group": {"_id": None, "views": {"$sum": "$views"}, "qualified": {"$sum": "$qualified_views"}}},
+    ]
+    v_rows = await db.live_streams.aggregate(views_pipe).to_list(1)
+    views_total = v_rows[0] if v_rows else {"views": 0, "qualified": 0}
+    followers = await db.follows.count_documents({"streamer_id": current_user.id})
+
+    return {
+        "by_source": by_source,
+        "time_series": series,
+        "top_gifters": top_gifters,
+        "gift_tiers": tiers,
+        "streams": {"total": total_streams, "live_now": live_now,
+                    "views": int(views_total.get("views", 0)),
+                    "qualified_views": int(views_total.get("qualified", 0))},
+        "followers": followers,
+    }
 
 # =============================================================================
 # APP SETUP

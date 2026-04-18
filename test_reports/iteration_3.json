@@ -1,0 +1,152 @@
+{
+  "summary": "Iteration 3 testing of View/Clip productivity features. Backend: 100% pass (58/58 tests - 28 new + 30 regression). Frontend: All new UI features verified. Fixed missing state declarations in StreamView.jsx.",
+  
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {
+        "screen": "Dialog components",
+        "issues": ["Console warning: Missing Description or aria-describedby for DialogContent - accessibility improvement (carried over from iteration 2)"]
+      }
+    ]
+  },
+  
+  "passed_tests": {
+    "backend_new_features": [
+      "GET /api/referrals/my - returns code, referred_count, earnings, events",
+      "GET /api/referrals/leaderboard - public endpoint, sorted by referral_earnings desc",
+      "GET /api/referrals/validate/{code} - returns valid bool and referrer_name",
+      "POST /api/auth/register with referral_code - sets referred_by correctly",
+      "POST /api/auth/register - auto-generates referral_code for new users",
+      "POST /api/streamers/{id}/follow - creates follow record, notifies streamer",
+      "POST /api/streamers/{id}/follow - idempotent (returns 'Already following')",
+      "POST /api/streamers/{id}/unfollow - deletes follow record",
+      "GET /api/streamers/{id}/follow-status - returns following and followers_count",
+      "GET /api/users/me/follows - enriches with streamer info and live_stream_id",
+      "POST /api/streams (create) - notifies all followers with stream_live notification",
+      "POST /api/gifts/send - creates gift_received notification for streamer",
+      "GET /api/notifications - returns notifications[] and unread_count",
+      "POST /api/notifications/{id}/read - marks single notification read",
+      "POST /api/notifications/read-all - marks all read, returns count",
+      "GET /api/search?q=term - returns content, streams, streamers, query",
+      "GET /api/search - queries <2 chars return empty arrays",
+      "GET /api/search - case-insensitive regex matching",
+      "GET /api/trending - returns top 12 VOD and top 12 live streams",
+      "GET /api/streamers/me/analytics - returns by_source, time_series, top_gifters, gift_tiers, streams, followers",
+      "GET /api/streamers/me/analytics - requires streamer/admin role",
+      "POST /api/streams/{id}/heartbeat - accumulates watch minutes server-side",
+      "POST /api/streams/{id}/heartbeat - increments minutes on each call",
+      "POST /api/streams/{id}/qualified-view - legacy endpoint still works"
+    ],
+    "backend_regression": [
+      "All 30 tests from iteration 2 still passing (auth, gifts, payments, admin, streams, promos, connect)"
+    ],
+    "frontend": [
+      "/leaderboard page renders (public, no auth required)",
+      "/notifications page requires auth, shows notification list",
+      "NotificationBell shows unread count badge in nav",
+      "Profile shows referral card with code, copy-link button, referred_count, earnings",
+      "Auth Sign Up has optional referral_code input",
+      "Browse has search input with debounced search",
+      "Browse has Top 50 (leaderboard) nav button",
+      "StreamView shows followers count and Follow/Unfollow button (hidden for own stream)",
+      "StreamView has heartbeat interval in handleJoinStream",
+      "StreamerDashboard Analytics section shows followers, views/gifts earnings breakdown",
+      "StreamerDashboard shows top gifters list and gift tier breakdown",
+      "StreamerDashboard shows daily earnings bar chart"
+    ]
+  },
+  
+  "test_report_links": [
+    "/app/backend/tests/test_viewclip_iteration3.py",
+    "/app/backend/tests/test_viewclip_api.py",
+    "/app/test_reports/pytest/pytest_iteration3.xml"
+  ],
+  
+  "action_items": [],
+  
+  "critical_code_review_comments": [
+    "FIXED: StreamView.jsx was missing state declarations for followStatus, watchMinutes, and heartbeatRef - added them",
+    "Dialog components still missing aria-describedby for accessibility (minor)",
+    "Stripe Connect onboarding and payout transfers remain MOCKED (as expected per requirements)"
+  ],
+  
+  "updated_files": [
+    "/app/frontend/src/pages/StreamView.jsx",
+    "/app/backend/tests/test_viewclip_iteration3.py"
+  ],
+  
+  "success_rate": {
+    "backend": "100% (58/58 tests - 28 new + 30 regression)",
+    "frontend": "100% (all new features verified)"
+  },
+  
+  "test_credentials": {
+    "admin": "admin@viewclip.com / Admin123!",
+    "stripe_test_key": "sk_test_emergent"
+  },
+  
+  "seed_data_creation": "Multiple test users created with referral codes, follow relationships, and notifications during testing",
+  
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  
+  "context_for_next_testing_agent": "All View/Clip iteration 3 features tested and working. New features include: referral system (10% commission), follow/unfollow streamers with notifications, notifications center with bell icon, unified search, trending feed, streamer analytics (earnings time-series, top gifters, gift-tier breakdown, followers), and server-side heartbeat for 30-min qualified view. StreamView.jsx had missing state declarations which were fixed. Stripe Connect remains mocked.",
+  
+  "mocked_apis": {
+    "Stripe Connect Express onboarding": "POST /api/streamers/connect/onboard returns mock status=active",
+    "Stripe Connect Transfer.create": "POST /api/admin/payouts/trigger marks earnings as paid_out but doesn't create real transfers"
+  },
+  
+  "features_verified": {
+    "referrals": {
+      "my_referrals": "GET /api/referrals/my returns code, referred_count, earnings, events",
+      "leaderboard": "GET /api/referrals/leaderboard is public, sorted by earnings",
+      "validate_code": "GET /api/referrals/validate/{code} returns valid bool",
+      "register_with_code": "POST /api/auth/register with referral_code sets referred_by",
+      "auto_generate_code": "New users get auto-generated referral_code"
+    },
+    "follow_unfollow": {
+      "follow": "POST /api/streamers/{id}/follow creates record, notifies streamer",
+      "unfollow": "POST /api/streamers/{id}/unfollow deletes record",
+      "follow_status": "GET /api/streamers/{id}/follow-status returns following, followers_count",
+      "my_follows": "GET /api/users/me/follows enriches with streamer info"
+    },
+    "notifications": {
+      "list": "GET /api/notifications returns notifications[], unread_count",
+      "mark_read": "POST /api/notifications/{id}/read marks single read",
+      "mark_all_read": "POST /api/notifications/read-all marks all read",
+      "new_follower": "Following creates new_follower notification",
+      "stream_live": "Creating stream notifies all followers",
+      "gift_received": "Sending gift notifies streamer"
+    },
+    "search": {
+      "unified": "GET /api/search?q=term returns content, streams, streamers",
+      "min_length": "Queries <2 chars return empty arrays",
+      "case_insensitive": "Regex matching is case-insensitive"
+    },
+    "trending": {
+      "endpoint": "GET /api/trending returns top 12 VOD + top 12 live streams"
+    },
+    "analytics": {
+      "endpoint": "GET /api/streamers/me/analytics returns full analytics",
+      "by_source": "Earnings breakdown by views/gifts",
+      "time_series": "30-day daily earnings",
+      "top_gifters": "Top 10 gifters",
+      "gift_tiers": "Gift tier breakdown",
+      "streams": "Total streams, views, qualified_views",
+      "followers": "Follower count"
+    },
+    "heartbeat": {
+      "endpoint": "POST /api/streams/{id}/heartbeat accumulates watch minutes",
+      "qualification": "Auto-qualifies view at 30-min threshold",
+      "legacy": "POST /api/streams/{id}/qualified-view still works"
+    }
+  }
+}

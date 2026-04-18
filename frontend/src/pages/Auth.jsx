@@ -43,7 +43,8 @@ const Auth = () => {
     email: '',
     password: '',
     name: '',
-    role: 'viewer'
+    role: 'viewer',
+    referral_code: ''
   });
 
   const handleLogin = async (e) => {
@@ -155,6 +156,12 @@ const Auth = () => {
                     <option value="viewer" className="bg-[#0A0E27]">Viewer — $7/month</option>
                     <option value="streamer" className="bg-[#0A0E27]">Streamer — $50/month</option>
                   </select>
+                </div>
+                <div>
+                  <Label htmlFor="register-referral" className="text-white">Referral code <span className="text-gray-500 text-xs">(optional)</span></Label>
+                  <Input data-testid="register-referral-input" id="register-referral" type="text" value={registerData.referral_code}
+                    onChange={(e) => setRegisterData({ ...registerData, referral_code: e.target.value.toUpperCase() })}
+                    className="bg-white/5 border-white/10 text-white placeholder:text-gray-500 mt-2 uppercase" placeholder="e.g. KAICE1A2B3" />
                 </div>
                 <Button data-testid="register-submit-btn" type="submit" disabled={loading}
                   className="w-full bg-gradient-to-r from-cyan-400 to-fuchsia-500 hover:opacity-90 rounded-full py-6 mt-6 font-semibold text-[#05070F]">
