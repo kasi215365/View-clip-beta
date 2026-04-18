@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { AuthContext } from '@/App';
 import { Button } from '@/components/ui/button';
 import { Play, Video, MessageCircle, Gift, TrendingUp, Users } from 'lucide-react';
+import Logo from '@/components/Logo';
 
 const Landing = () => {
   const navigate = useNavigate();
@@ -13,9 +14,8 @@ const Landing = () => {
       {/* Navigation */}
       <nav className="fixed top-0 w-full z-50 glass-effect px-6 py-4">
         <div className="max-w-7xl mx-auto flex justify-between items-center">
-          <div className="flex items-center space-x-2">
-            <Video className="w-8 h-8 text-cyan-400" />
-            <h1 className="text-2xl font-bold">StreamHub</h1>
+          <div className="flex items-center">
+            <Logo size="md" />
           </div>
           <div className="flex items-center space-x-4">
             {user ? (
@@ -75,7 +75,7 @@ const Landing = () => {
       {/* Features Section */}
       <section className="py-20 px-6 bg-[#0D1234]">
         <div className="max-w-7xl mx-auto">
-          <h2 className="text-4xl font-bold text-center mb-16">Why Choose StreamHub?</h2>
+          <h2 className="text-4xl font-bold text-center mb-16">Why Choose View/Clip?</h2>
           <div className="grid md:grid-cols-3 gap-8">
             <div data-testid="feature-content" className="glass-effect p-8 rounded-2xl hover:bg-white/10 transition-colors">
               <Video className="w-12 h-12 text-cyan-400 mb-4" />
@@ -180,7 +180,7 @@ const Landing = () => {
               </div>
               <h3 className="text-2xl font-bold mb-2">Streamer</h3>
               <div className="mb-6">
-                <span className="text-5xl font-bold">$100</span>
+                <span className="text-5xl font-bold">$50</span>
                 <span className="text-gray-400">/month</span>
               </div>
               <ul className="space-y-3 mb-8">
@@ -194,15 +194,15 @@ const Landing = () => {
                 </li>
                 <li className="flex items-center">
                   <div className="w-2 h-2 bg-purple-400 rounded-full mr-3"></div>
-                  <span>Earn $0.03 per 100K views</span>
+                  <span>$0.005 per qualified view (30-min)</span>
                 </li>
                 <li className="flex items-center">
                   <div className="w-2 h-2 bg-purple-400 rounded-full mr-3"></div>
-                  <span>Earn $0.002 per gift</span>
+                  <span>Earn on every gift tier (from $0.002)</span>
                 </li>
                 <li className="flex items-center">
                   <div className="w-2 h-2 bg-purple-400 rounded-full mr-3"></div>
-                  <span>Save & export streams</span>
+                  <span>Save & export streams (YouTube/Twitch/X)</span>
                 </li>
               </ul>
               <Button data-testid="streamer-subscribe-btn" onClick={() => navigate('/auth')} className="w-full bg-gradient-to-r from-purple-600 to-pink-600 hover:opacity-90 rounded-full py-6">
@@ -216,7 +216,7 @@ const Landing = () => {
       {/* Footer */}
       <footer className="py-12 px-6 border-t border-white/10">
         <div className="max-w-7xl mx-auto text-center text-gray-400">
-          <p>&copy; 2025 StreamHub. All rights reserved.</p>
+          <p>&copy; 2025 View/Clip. All rights reserved.</p>
         </div>
       </footer>
     </div>

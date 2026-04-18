@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { AuthContext, API } from '@/App';
 import { Button } from '@/components/ui/button';
 import { Video, Radio, Users, Eye, LogOut, User as UserIcon, Home } from 'lucide-react';
+import Logo from '@/components/Logo';
 import axios from 'axios';
 import { toast } from 'sonner';
 
@@ -36,10 +37,7 @@ const LiveStreams = () => {
       {/* Navigation */}
       <nav className="fixed top-0 w-full z-50 glass-effect px-6 py-4">
         <div className="max-w-7xl mx-auto flex justify-between items-center">
-          <div className="flex items-center space-x-2">
-            <Video className="w-8 h-8 text-cyan-400" />
-            <h1 className="text-2xl font-bold">StreamHub</h1>
-          </div>
+          <Logo size="md" />
           <div className="flex items-center space-x-4">
             <Button data-testid="browse-nav-btn" onClick={() => navigate('/browse')} variant="ghost" className="text-white hover:text-cyan-400">
               <Home className="w-4 h-4 mr-2" />

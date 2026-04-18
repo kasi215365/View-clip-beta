@@ -11,6 +11,7 @@ import StreamView from "@/pages/StreamView";
 import StreamerDashboard from "@/pages/StreamerDashboard";
 import AdminDashboard from "@/pages/AdminDashboard";
 import Profile from "@/pages/Profile";
+import PaymentSuccess from "@/pages/PaymentSuccess";
 import { Toaster } from "@/components/ui/sonner";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
@@ -58,7 +59,7 @@ function App() {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center min-h-screen bg-[#0A0E27]">
+      <div className="flex items-center justify-center min-h-screen bg-[#05070F]">
         <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-cyan-400"></div>
       </div>
     );
@@ -78,6 +79,7 @@ function App() {
             <Route path="/streamer" element={user && (user.role === 'streamer' || user.role === 'admin') ? <StreamerDashboard /> : <Navigate to="/browse" />} />
             <Route path="/admin" element={user && user.role === 'admin' ? <AdminDashboard /> : <Navigate to="/browse" />} />
             <Route path="/profile" element={user ? <Profile /> : <Navigate to="/auth" />} />
+            <Route path="/payment-success" element={user ? <PaymentSuccess /> : <Navigate to="/auth" />} />
           </Routes>
         </BrowserRouter>
         <Toaster position="top-right" />

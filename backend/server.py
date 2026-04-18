@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, status
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
@@ -7,11 +7,18 @@ import os
 import logging
 from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict, EmailStr
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 import uuid
 from datetime import datetime, timezone, timedelta
 import bcrypt
 import jwt
+
+from emergentintegrations.payments.stripe.checkout import (
+    StripeCheckout,
+    CheckoutSessionResponse,
+    CheckoutStatusResponse,
+    CheckoutSessionRequest,
+)
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -26,20 +33,52 @@ JWT_SECRET = os.environ.get('JWT_SECRET', 'your-secret-key-change-in-production'
 JWT_ALGORITHM = 'HS256'
 JWT_EXPIRATION_HOURS = 24 * 30  # 30 days
 
+# Stripe
+STRIPE_API_KEY = os.environ.get('STRIPE_API_KEY', 'sk_test_emergent')
+
 security = HTTPBearer()
-
-# Create the main app without a prefix
-app = FastAPI()
-
-# Create a router with the /api prefix
+app = FastAPI(title="View/Clip")
 api_router = APIRouter(prefix="/api")
 
-# Models
+# =============================================================================
+# BUSINESS CONSTANTS (View/Clip economic model)
+# =============================================================================
+VIEWER_SUB_PRICE = 7.00
+STREAMER_SUB_PRICE = 50.00
+
+# Gift tiers: id, emoji, label, value_per_unit ($ streamer earns per unit used),
+# qty (units in bundle), price (USD user pays for bundle)
+GIFT_TIERS: List[Dict[str, Any]] = [
+    {"id": "t1", "emoji": "🪙", "name": "Coin",      "value_per_unit": 0.002, "qty": 500, "price": 10.00},
+    {"id": "t2", "emoji": "🥃", "name": "Shot",      "value_per_unit": 0.013, "qty": 500, "price": 20.00},
+    {"id": "t3", "emoji": "🥇", "name": "Gold",      "value_per_unit": 0.102, "qty": 500, "price": 35.00},
+    {"id": "t4", "emoji": "🏆", "name": "Trophy",    "value_per_unit": 0.140, "qty": 500, "price": 50.00},
+    {"id": "t5", "emoji": "🏎",  "name": "Racer",     "value_per_unit": 0.200, "qty": 500, "price": 72.00},
+    {"id": "t6", "emoji": "🏚",  "name": "Mansion",   "value_per_unit": 1.050, "qty": 500, "price": 100.00},
+    {"id": "t7", "emoji": "💎", "name": "Diamond",   "value_per_unit": 2.003, "qty": 500, "price": 200.00},
+    {"id": "t8", "emoji": "🌍", "name": "World",     "value_per_unit": 3.000, "qty": 500, "price": 300.00},
+]
+GIFT_TIERS_BY_ID = {t["id"]: t for t in GIFT_TIERS}
+
+DEFAULT_SETTINGS = {
+    "viewer_sub_price": VIEWER_SUB_PRICE,
+    "streamer_sub_price": STREAMER_SUB_PRICE,
+    "earnings_per_view": 0.005,             # $0.005 per view (30-min threshold)
+    "view_threshold_minutes": 30,
+    "earnings_per_100k_views": 5.00,         # display helper ($0.005 * 100000 = $500 actually)
+    "gift_base_rate": 0.002,
+    "budget_alert_percent": 80,              # admin-configurable bandwidth cap %
+    "maintenance_mode": False,
+}
+
+# =============================================================================
+# MODELS
+# =============================================================================
 class UserRegister(BaseModel):
     email: EmailStr
     password: str
     name: str
-    role: str = "viewer"  # viewer, streamer, admin
+    role: str = "viewer"
 
 class UserLogin(BaseModel):
     email: EmailStr
@@ -51,20 +90,23 @@ class User(BaseModel):
     email: str
     name: str
     role: str
-    subscription_status: str = "inactive"  # active, inactive
+    subscription_status: str = "inactive"
     subscription_expires: Optional[str] = None
     created_at: str
+    gift_wallet: Dict[str, int] = Field(default_factory=dict)  # tier_id -> units
+    connect_account_status: str = "not_onboarded"  # not_onboarded, pending, active
 
 class Content(BaseModel):
     model_config = ConfigDict(extra="ignore")
     id: str
     title: str
     description: str
-    type: str  # movie, tv-show, sport
+    type: str
     video_url: str
     thumbnail_url: str
-    duration: int  # in seconds
+    duration: int
     views: int = 0
+    is_promo: bool = False
     created_at: str
 
 class ContentCreate(BaseModel):
@@ -74,6 +116,7 @@ class ContentCreate(BaseModel):
     video_url: str
     thumbnail_url: str
     duration: int
+    is_promo: bool = False
 
 class LiveStream(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -89,7 +132,9 @@ class LiveStream(BaseModel):
     start_time: str
     end_time: Optional[str] = None
     views: int = 0
+    qualified_views: int = 0   # views that hit 30-min threshold
     saved: bool = False
+    exports: List[Dict[str, str]] = Field(default_factory=list)
 
 class LiveStreamCreate(BaseModel):
     title: str
@@ -112,43 +157,51 @@ class CommentCreate(BaseModel):
     content_id: Optional[str] = None
     text: str
 
-class Gift(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-    id: str
-    sender_id: str
-    sender_name: str
-    streamer_id: str
+class GiftSend(BaseModel):
     stream_id: str
-    amount: float
-    created_at: str
-
-class GiftCreate(BaseModel):
-    stream_id: str
-    amount: float
+    tier_id: str
+    quantity: int = 1
 
 class Subscription(BaseModel):
     model_config = ConfigDict(extra="ignore")
     id: str
     user_id: str
-    type: str  # viewer, streamer
+    type: str
     amount: float
-    status: str  # active, expired
+    status: str
     created_at: str
     expires_at: str
 
-class SubscriptionCreate(BaseModel):
-    type: str  # viewer, streamer
+class CheckoutSubscribe(BaseModel):
+    type: str  # viewer | streamer
+    origin_url: str
 
-class Earning(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-    id: str
-    streamer_id: str
-    amount: float
-    source: str  # views, gifts
+class CheckoutGiftBundle(BaseModel):
+    tier_id: str
+    origin_url: str
+
+class ExportStream(BaseModel):
+    platform: str  # youtube | twitch | x | custom
+    target_url: Optional[str] = None
+
+class AdminSettingsUpdate(BaseModel):
+    viewer_sub_price: Optional[float] = None
+    streamer_sub_price: Optional[float] = None
+    earnings_per_view: Optional[float] = None
+    view_threshold_minutes: Optional[int] = None
+    gift_base_rate: Optional[float] = None
+    budget_alert_percent: Optional[int] = None
+    maintenance_mode: Optional[bool] = None
+
+class PromoCreate(BaseModel):
+    title: str
     description: str
-    created_at: str
+    thumbnail_url: str
+    video_url: str
 
-# Helper Functions
+# =============================================================================
+# HELPERS
+# =============================================================================
 def hash_password(password: str) -> str:
     return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
 
@@ -171,24 +224,47 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
         user_id = payload.get('user_id')
         if not user_id:
             raise HTTPException(status_code=401, detail="Invalid token")
-        
-        user = await db.users.find_one({"id": user_id}, {"_id": 0})
+        user = await db.users.find_one({"id": user_id}, {"_id": 0, "password_hash": 0})
         if not user:
             raise HTTPException(status_code=401, detail="User not found")
-        
+        user.setdefault("gift_wallet", {})
+        user.setdefault("connect_account_status", "not_onboarded")
         return User(**user)
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Token expired")
     except jwt.InvalidTokenError:
         raise HTTPException(status_code=401, detail="Invalid token")
 
-# Auth Routes
+async def require_admin(current_user: User = Depends(get_current_user)):
+    if current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return current_user
+
+async def get_settings() -> Dict[str, Any]:
+    doc = await db.settings.find_one({"id": "global"}, {"_id": 0})
+    if not doc:
+        doc = {"id": "global", **DEFAULT_SETTINGS, "updated_at": datetime.now(timezone.utc).isoformat()}
+        await db.settings.insert_one(doc.copy())
+        return doc
+    merged = {**DEFAULT_SETTINGS, **doc}
+    return merged
+
+def now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+def get_stripe_checkout(request: Request) -> StripeCheckout:
+    host_url = str(request.base_url).rstrip('/')
+    webhook_url = f"{host_url}/api/webhook/stripe"
+    return StripeCheckout(api_key=STRIPE_API_KEY, webhook_url=webhook_url)
+
+# =============================================================================
+# AUTH
+# =============================================================================
 @api_router.post("/auth/register")
 async def register(user_data: UserRegister):
     existing = await db.users.find_one({"email": user_data.email})
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
-    
     user_id = str(uuid.uuid4())
     user_doc = {
         "id": user_id,
@@ -198,12 +274,12 @@ async def register(user_data: UserRegister):
         "role": user_data.role,
         "subscription_status": "inactive",
         "subscription_expires": None,
-        "created_at": datetime.now(timezone.utc).isoformat()
+        "created_at": now_iso(),
+        "gift_wallet": {},
+        "connect_account_status": "not_onboarded",
     }
-    
     await db.users.insert_one(user_doc)
     token = create_token(user_id, user_data.email, user_data.role)
-    
     return {
         "token": token,
         "user": User(**{k: v for k, v in user_doc.items() if k != 'password_hash'})
@@ -214,26 +290,25 @@ async def login(credentials: UserLogin):
     user = await db.users.find_one({"email": credentials.email})
     if not user or not verify_password(credentials.password, user['password_hash']):
         raise HTTPException(status_code=401, detail="Invalid credentials")
-    
     token = create_token(user['id'], user['email'], user['role'])
-    return {
-        "token": token,
-        "user": User(**{k: v for k, v in user.items() if k not in ['_id', 'password_hash']})
-    }
+    payload = {k: v for k, v in user.items() if k not in ['_id', 'password_hash']}
+    payload.setdefault("gift_wallet", {})
+    payload.setdefault("connect_account_status", "not_onboarded")
+    return {"token": token, "user": User(**payload)}
 
 @api_router.get("/auth/me", response_model=User)
 async def get_me(current_user: User = Depends(get_current_user)):
     return current_user
 
-# Content Routes
+# =============================================================================
+# CONTENT
+# =============================================================================
 @api_router.get("/content", response_model=List[Content])
 async def get_content(type: Optional[str] = None):
-    query = {}
+    query = {"is_promo": {"$ne": True}}
     if type:
         query['type'] = type
-    
-    content_list = await db.content.find(query, {"_id": 0}).to_list(1000)
-    return content_list
+    return await db.content.find(query, {"_id": 0}).to_list(1000)
 
 @api_router.get("/content/{content_id}", response_model=Content)
 async def get_content_by_id(content_id: str):
@@ -246,39 +321,58 @@ async def get_content_by_id(content_id: str):
 async def create_content(content_data: ContentCreate, current_user: User = Depends(get_current_user)):
     if current_user.role != "admin":
         raise HTTPException(status_code=403, detail="Admin access required")
-    
     content_id = str(uuid.uuid4())
-    content_doc = {
-        "id": content_id,
-        **content_data.model_dump(),
-        "views": 0,
-        "created_at": datetime.now(timezone.utc).isoformat()
-    }
-    
-    await db.content.insert_one(content_doc)
+    content_doc = {"id": content_id, **content_data.model_dump(), "views": 0, "created_at": now_iso()}
+    await db.content.insert_one(content_doc.copy())
     return Content(**content_doc)
 
 @api_router.post("/content/{content_id}/view")
 async def increment_content_view(content_id: str, current_user: User = Depends(get_current_user)):
-    result = await db.content.update_one(
-        {"id": content_id},
-        {"$inc": {"views": 1}}
-    )
-    
+    result = await db.content.update_one({"id": content_id}, {"$inc": {"views": 1}})
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Content not found")
-    
     return {"message": "View recorded"}
 
-# Live Stream Routes
+# =============================================================================
+# SELF-PROMOTION ENGINE
+# =============================================================================
+@api_router.get("/promos", response_model=List[Content])
+async def list_promos():
+    return await db.content.find({"is_promo": True}, {"_id": 0}).to_list(100)
+
+@api_router.post("/promos", response_model=Content)
+async def create_promo(promo: PromoCreate, _admin: User = Depends(require_admin)):
+    promo_doc = {
+        "id": str(uuid.uuid4()),
+        "title": promo.title,
+        "description": promo.description,
+        "thumbnail_url": promo.thumbnail_url,
+        "video_url": promo.video_url,
+        "type": "promo",
+        "duration": 30,
+        "is_promo": True,
+        "views": 0,
+        "created_at": now_iso(),
+    }
+    await db.content.insert_one(promo_doc.copy())
+    return Content(**promo_doc)
+
+@api_router.delete("/promos/{promo_id}")
+async def delete_promo(promo_id: str, _admin: User = Depends(require_admin)):
+    res = await db.content.delete_one({"id": promo_id, "is_promo": True})
+    if res.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Promo not found")
+    return {"message": "deleted"}
+
+# =============================================================================
+# LIVE STREAMS
+# =============================================================================
 @api_router.get("/streams", response_model=List[LiveStream])
 async def get_streams(is_live: Optional[bool] = None):
     query = {}
     if is_live is not None:
         query['is_live'] = is_live
-    
-    streams = await db.live_streams.find(query, {"_id": 0}).sort("start_time", -1).to_list(1000)
-    return streams
+    return await db.live_streams.find(query, {"_id": 0}).sort("start_time", -1).to_list(1000)
 
 @api_router.get("/streams/{stream_id}", response_model=LiveStream)
 async def get_stream_by_id(stream_id: str):
@@ -289,12 +383,10 @@ async def get_stream_by_id(stream_id: str):
 
 @api_router.post("/streams", response_model=LiveStream)
 async def create_stream(stream_data: LiveStreamCreate, current_user: User = Depends(get_current_user)):
-    if current_user.role != "streamer" and current_user.role != "admin":
+    if current_user.role not in ("streamer", "admin"):
         raise HTTPException(status_code=403, detail="Streamer access required")
-    
     if current_user.subscription_status != "active" and current_user.role != "admin":
         raise HTTPException(status_code=403, detail="Active streamer subscription required")
-    
     stream_id = str(uuid.uuid4())
     stream_doc = {
         "id": stream_id,
@@ -303,13 +395,14 @@ async def create_stream(stream_data: LiveStreamCreate, current_user: User = Depe
         **stream_data.model_dump(),
         "is_live": True,
         "viewers_count": 0,
-        "start_time": datetime.now(timezone.utc).isoformat(),
+        "start_time": now_iso(),
         "end_time": None,
         "views": 0,
-        "saved": False
+        "qualified_views": 0,
+        "saved": False,
+        "exports": [],
     }
-    
-    await db.live_streams.insert_one(stream_doc)
+    await db.live_streams.insert_one(stream_doc.copy())
     return LiveStream(**stream_doc)
 
 @api_router.post("/streams/{stream_id}/end")
@@ -317,204 +410,487 @@ async def end_stream(stream_id: str, current_user: User = Depends(get_current_us
     stream = await db.live_streams.find_one({"id": stream_id})
     if not stream:
         raise HTTPException(status_code=404, detail="Stream not found")
-    
     if stream['streamer_id'] != current_user.id and current_user.role != "admin":
         raise HTTPException(status_code=403, detail="Not authorized")
-    
     await db.live_streams.update_one(
         {"id": stream_id},
-        {"$set": {
-            "is_live": False,
-            "end_time": datetime.now(timezone.utc).isoformat()
-        }}
+        {"$set": {"is_live": False, "end_time": now_iso()}}
     )
-    
-    # Calculate earnings from views
-    views = stream['views']
-    earnings_per_100k = 0.03
-    earnings = (views / 100000) * earnings_per_100k
-    
+    settings = await get_settings()
+    rate = settings["earnings_per_view"]
+    qualified = stream.get('qualified_views', stream.get('views', 0))
+    earnings = round(qualified * rate, 4)
     if earnings > 0:
-        earning_doc = {
+        await db.earnings.insert_one({
             "id": str(uuid.uuid4()),
             "streamer_id": current_user.id,
             "amount": earnings,
             "source": "views",
-            "description": f"Earnings from stream: {stream['title']}",
-            "created_at": datetime.now(timezone.utc).isoformat()
-        }
-        await db.earnings.insert_one(earning_doc)
-    
-    return {"message": "Stream ended", "earnings": earnings}
+            "description": f"Earnings from stream: {stream['title']} ({qualified} qualified views)",
+            "created_at": now_iso()
+        })
+    return {"message": "Stream ended", "earnings": earnings, "qualified_views": qualified}
 
 @api_router.post("/streams/{stream_id}/join")
 async def join_stream(stream_id: str, current_user: User = Depends(get_current_user)):
     if current_user.subscription_status != "active":
         raise HTTPException(status_code=403, detail="Active subscription required")
-    
     result = await db.live_streams.update_one(
         {"id": stream_id, "is_live": True},
         {"$inc": {"viewers_count": 1, "views": 1}}
     )
-    
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Stream not found or not live")
-    
     return {"message": "Joined stream"}
+
+@api_router.post("/streams/{stream_id}/qualified-view")
+async def qualified_view(stream_id: str, current_user: User = Depends(get_current_user)):
+    """Client calls this after 30 minutes of continuous watch to qualify the view for payout."""
+    settings = await get_settings()
+    _ = settings["view_threshold_minutes"]  # enforced client-side
+    result = await db.live_streams.update_one(
+        {"id": stream_id},
+        {"$inc": {"qualified_views": 1}}
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Stream not found")
+    return {"message": "Qualified view recorded"}
 
 @api_router.post("/streams/{stream_id}/save")
 async def save_stream(stream_id: str, current_user: User = Depends(get_current_user)):
     stream = await db.live_streams.find_one({"id": stream_id})
     if not stream:
         raise HTTPException(status_code=404, detail="Stream not found")
-    
     if stream['streamer_id'] != current_user.id and current_user.role != "admin":
         raise HTTPException(status_code=403, detail="Not authorized")
-    
-    await db.live_streams.update_one(
-        {"id": stream_id},
-        {"$set": {"saved": True}}
-    )
-    
+    await db.live_streams.update_one({"id": stream_id}, {"$set": {"saved": True}})
     return {"message": "Stream saved"}
 
-# Comment Routes
+@api_router.post("/streams/{stream_id}/export")
+async def export_stream(stream_id: str, body: ExportStream, current_user: User = Depends(get_current_user)):
+    stream = await db.live_streams.find_one({"id": stream_id})
+    if not stream:
+        raise HTTPException(status_code=404, detail="Stream not found")
+    if stream['streamer_id'] != current_user.id and current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Not authorized")
+    if not stream.get("saved"):
+        raise HTTPException(status_code=400, detail="Save the stream before exporting")
+    allowed = {"youtube", "twitch", "x", "custom"}
+    if body.platform not in allowed:
+        raise HTTPException(status_code=400, detail="Unsupported platform")
+    export_record = {
+        "platform": body.platform,
+        "target_url": body.target_url or f"https://{body.platform}.com/viewclip/{stream_id}",
+        "exported_at": now_iso(),
+    }
+    await db.live_streams.update_one(
+        {"id": stream_id},
+        {"$push": {"exports": export_record}}
+    )
+    return {"message": "Stream exported", "export": export_record}
+
+# =============================================================================
+# COMMENTS
+# =============================================================================
 @api_router.post("/comments", response_model=Comment)
 async def create_comment(comment_data: CommentCreate, current_user: User = Depends(get_current_user)):
     if current_user.subscription_status != "active":
         raise HTTPException(status_code=403, detail="Active subscription required")
-    
-    comment_id = str(uuid.uuid4())
     comment_doc = {
-        "id": comment_id,
+        "id": str(uuid.uuid4()),
         "user_id": current_user.id,
         "user_name": current_user.name,
         **comment_data.model_dump(),
-        "created_at": datetime.now(timezone.utc).isoformat()
+        "created_at": now_iso()
     }
-    
-    await db.comments.insert_one(comment_doc)
+    await db.comments.insert_one(comment_doc.copy())
     return Comment(**comment_doc)
 
 @api_router.get("/comments/{stream_id}", response_model=List[Comment])
 async def get_comments(stream_id: str):
-    comments = await db.comments.find({"stream_id": stream_id}, {"_id": 0}).sort("created_at", -1).to_list(1000)
-    return comments
+    return await db.comments.find({"stream_id": stream_id}, {"_id": 0}).sort("created_at", -1).to_list(1000)
 
-# Gift Routes
-@api_router.post("/gifts", response_model=Gift)
-async def send_gift(gift_data: GiftCreate, current_user: User = Depends(get_current_user)):
+# =============================================================================
+# GIFTS (tier-based, wallet-backed)
+# =============================================================================
+@api_router.get("/gifts/tiers")
+async def list_gift_tiers():
+    return {"tiers": GIFT_TIERS}
+
+@api_router.get("/gifts/wallet")
+async def get_wallet(current_user: User = Depends(get_current_user)):
+    user = await db.users.find_one({"id": current_user.id}, {"_id": 0, "gift_wallet": 1})
+    return {"wallet": (user or {}).get("gift_wallet", {})}
+
+@api_router.post("/gifts/send")
+async def send_gift(body: GiftSend, current_user: User = Depends(get_current_user)):
     if current_user.subscription_status != "active":
         raise HTTPException(status_code=403, detail="Active subscription required")
-    
-    stream = await db.live_streams.find_one({"id": gift_data.stream_id})
+    tier = GIFT_TIERS_BY_ID.get(body.tier_id)
+    if not tier:
+        raise HTTPException(status_code=400, detail="Invalid gift tier")
+    if body.quantity < 1:
+        raise HTTPException(status_code=400, detail="Quantity must be >= 1")
+
+    stream = await db.live_streams.find_one({"id": body.stream_id})
     if not stream:
         raise HTTPException(status_code=404, detail="Stream not found")
-    
-    gift_id = str(uuid.uuid4())
+
+    user = await db.users.find_one({"id": current_user.id})
+    wallet = (user or {}).get("gift_wallet", {})
+    balance = int(wallet.get(body.tier_id, 0))
+    if balance < body.quantity:
+        raise HTTPException(status_code=400, detail=f"Insufficient {tier['emoji']} {tier['name']} units. Purchase a bundle first.")
+
+    # Decrement wallet
+    wallet[body.tier_id] = balance - body.quantity
+    await db.users.update_one({"id": current_user.id}, {"$set": {"gift_wallet": wallet}})
+
+    settings = await get_settings()
+    base_rate = settings["gift_base_rate"]
+    # Streamer earns value_per_unit * quantity (tiered), floored by base rate
+    per_unit = max(tier["value_per_unit"], base_rate)
+    earnings = round(per_unit * body.quantity, 4)
+
     gift_doc = {
-        "id": gift_id,
+        "id": str(uuid.uuid4()),
         "sender_id": current_user.id,
         "sender_name": current_user.name,
         "streamer_id": stream['streamer_id'],
-        **gift_data.model_dump(),
-        "created_at": datetime.now(timezone.utc).isoformat()
+        "stream_id": body.stream_id,
+        "tier_id": body.tier_id,
+        "tier_emoji": tier["emoji"],
+        "tier_name": tier["name"],
+        "quantity": body.quantity,
+        "value": earnings,
+        "created_at": now_iso(),
     }
-    
-    await db.gifts.insert_one(gift_doc)
-    
-    # Calculate earnings from gift
-    earnings = gift_data.amount * 0.002
-    earning_doc = {
+    await db.gifts.insert_one(gift_doc.copy())
+    await db.earnings.insert_one({
         "id": str(uuid.uuid4()),
         "streamer_id": stream['streamer_id'],
         "amount": earnings,
         "source": "gifts",
-        "description": f"Gift from {current_user.name}",
-        "created_at": datetime.now(timezone.utc).isoformat()
-    }
-    await db.earnings.insert_one(earning_doc)
-    
-    return Gift(**gift_doc)
+        "description": f"{body.quantity}x {tier['emoji']} {tier['name']} from {current_user.name}",
+        "created_at": now_iso()
+    })
+    return {"message": "Gift sent", "gift": gift_doc, "streamer_earned": earnings}
 
-# Subscription Routes
-@api_router.post("/subscriptions/subscribe")
-async def subscribe(sub_data: SubscriptionCreate, current_user: User = Depends(get_current_user)):
-    amount = 7.0 if sub_data.type == "viewer" else 100.0
-    
-    # Mock payment processing
-    sub_id = str(uuid.uuid4())
-    expires_at = (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
-    
-    sub_doc = {
-        "id": sub_id,
-        "user_id": current_user.id,
-        "type": sub_data.type,
-        "amount": amount,
-        "status": "active",
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "expires_at": expires_at
-    }
-    
-    await db.subscriptions.insert_one(sub_doc)
-    
-    # Update user subscription status
-    update_data = {
-        "subscription_status": "active",
-        "subscription_expires": expires_at
-    }
-    
-    if sub_data.type == "streamer":
-        update_data["role"] = "streamer"
-    
-    await db.users.update_one(
-        {"id": current_user.id},
-        {"$set": update_data}
+# =============================================================================
+# STRIPE PAYMENTS
+# =============================================================================
+@api_router.post("/payments/checkout/subscribe")
+async def checkout_subscribe(body: CheckoutSubscribe, request: Request, current_user: User = Depends(get_current_user)):
+    settings = await get_settings()
+    if body.type == "viewer":
+        amount = float(settings["viewer_sub_price"])
+    elif body.type == "streamer":
+        amount = float(settings["streamer_sub_price"])
+    else:
+        raise HTTPException(status_code=400, detail="Invalid subscription type")
+
+    origin = body.origin_url.rstrip('/')
+    success_url = f"{origin}/payment-success?session_id={{CHECKOUT_SESSION_ID}}"
+    cancel_url = f"{origin}/profile"
+
+    stripe_checkout = get_stripe_checkout(request)
+    checkoutrequest = CheckoutSessionRequest(
+        amount=amount,
+        currency="usd",
+        success_url=success_url,
+        cancel_url=cancel_url,
+        metadata={
+            "purpose": "subscription",
+            "sub_type": body.type,
+            "user_id": current_user.id,
+        }
     )
-    
-    return {"message": "Subscription activated", "subscription": Subscription(**sub_doc)}
+    session: CheckoutSessionResponse = await stripe_checkout.create_checkout_session(checkoutrequest)
 
+    await db.payment_transactions.insert_one({
+        "id": str(uuid.uuid4()),
+        "session_id": session.session_id,
+        "user_id": current_user.id,
+        "email": current_user.email,
+        "amount": amount,
+        "currency": "usd",
+        "purpose": "subscription",
+        "metadata": {"sub_type": body.type},
+        "payment_status": "pending",
+        "status": "initiated",
+        "processed": False,
+        "created_at": now_iso(),
+    })
+    return {"url": session.url, "session_id": session.session_id}
+
+@api_router.post("/payments/checkout/gift-bundle")
+async def checkout_gift_bundle(body: CheckoutGiftBundle, request: Request, current_user: User = Depends(get_current_user)):
+    tier = GIFT_TIERS_BY_ID.get(body.tier_id)
+    if not tier:
+        raise HTTPException(status_code=400, detail="Invalid gift tier")
+
+    amount = float(tier["price"])
+    origin = body.origin_url.rstrip('/')
+    success_url = f"{origin}/payment-success?session_id={{CHECKOUT_SESSION_ID}}"
+    cancel_url = f"{origin}/profile"
+
+    stripe_checkout = get_stripe_checkout(request)
+    checkoutrequest = CheckoutSessionRequest(
+        amount=amount,
+        currency="usd",
+        success_url=success_url,
+        cancel_url=cancel_url,
+        metadata={
+            "purpose": "gift_bundle",
+            "tier_id": tier["id"],
+            "qty": str(tier["qty"]),
+            "user_id": current_user.id,
+        }
+    )
+    session: CheckoutSessionResponse = await stripe_checkout.create_checkout_session(checkoutrequest)
+
+    await db.payment_transactions.insert_one({
+        "id": str(uuid.uuid4()),
+        "session_id": session.session_id,
+        "user_id": current_user.id,
+        "email": current_user.email,
+        "amount": amount,
+        "currency": "usd",
+        "purpose": "gift_bundle",
+        "metadata": {"tier_id": tier["id"], "qty": tier["qty"]},
+        "payment_status": "pending",
+        "status": "initiated",
+        "processed": False,
+        "created_at": now_iso(),
+    })
+    return {"url": session.url, "session_id": session.session_id}
+
+@api_router.get("/payments/checkout/status/{session_id}")
+async def get_checkout_status(session_id: str, request: Request, current_user: User = Depends(get_current_user)):
+    tx = await db.payment_transactions.find_one({"session_id": session_id}, {"_id": 0})
+    if not tx:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+    if tx["user_id"] != current_user.id and current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    stripe_checkout = get_stripe_checkout(request)
+    status_response: CheckoutStatusResponse = await stripe_checkout.get_checkout_status(session_id)
+
+    # Update transaction status (once)
+    if not tx.get("processed") and status_response.payment_status == "paid":
+        await db.payment_transactions.update_one(
+            {"session_id": session_id, "processed": {"$ne": True}},
+            {"$set": {
+                "status": status_response.status,
+                "payment_status": status_response.payment_status,
+                "processed": True,
+                "completed_at": now_iso(),
+            }}
+        )
+        # Fulfilment
+        await _fulfill_payment(tx)
+    else:
+        await db.payment_transactions.update_one(
+            {"session_id": session_id},
+            {"$set": {
+                "status": status_response.status,
+                "payment_status": status_response.payment_status,
+            }}
+        )
+    return {
+        "status": status_response.status,
+        "payment_status": status_response.payment_status,
+        "amount_total": status_response.amount_total,
+        "currency": status_response.currency,
+        "purpose": tx.get("purpose"),
+        "metadata": status_response.metadata,
+    }
+
+async def _fulfill_payment(tx: Dict[str, Any]):
+    """Idempotent fulfilment based on purpose."""
+    purpose = tx.get("purpose")
+    user_id = tx["user_id"]
+    if purpose == "subscription":
+        sub_type = tx["metadata"]["sub_type"]
+        expires = (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
+        sub_doc = {
+            "id": str(uuid.uuid4()),
+            "user_id": user_id,
+            "type": sub_type,
+            "amount": tx["amount"],
+            "status": "active",
+            "created_at": now_iso(),
+            "expires_at": expires,
+            "session_id": tx["session_id"],
+        }
+        await db.subscriptions.insert_one(sub_doc.copy())
+        update = {"subscription_status": "active", "subscription_expires": expires}
+        if sub_type == "streamer":
+            update["role"] = "streamer"
+        await db.users.update_one({"id": user_id}, {"$set": update})
+    elif purpose == "gift_bundle":
+        tier_id = tx["metadata"]["tier_id"]
+        qty = int(tx["metadata"]["qty"])
+        user = await db.users.find_one({"id": user_id})
+        wallet = (user or {}).get("gift_wallet", {})
+        wallet[tier_id] = int(wallet.get(tier_id, 0)) + qty
+        await db.users.update_one({"id": user_id}, {"$set": {"gift_wallet": wallet}})
+
+@api_router.post("/webhook/stripe")
+async def stripe_webhook(request: Request):
+    body = await request.body()
+    sig = request.headers.get("Stripe-Signature")
+    stripe_checkout = get_stripe_checkout(request)
+    try:
+        event = await stripe_checkout.handle_webhook(body, sig)
+    except Exception as e:
+        logger.exception("Webhook parse error")
+        raise HTTPException(status_code=400, detail=f"Invalid webhook: {e}")
+
+    if event.event_type == "checkout.session.completed" and event.payment_status == "paid":
+        tx = await db.payment_transactions.find_one({"session_id": event.session_id})
+        if tx and not tx.get("processed"):
+            await db.payment_transactions.update_one(
+                {"session_id": event.session_id, "processed": {"$ne": True}},
+                {"$set": {"processed": True, "payment_status": "paid", "status": "completed", "completed_at": now_iso()}}
+            )
+            await _fulfill_payment(tx)
+    return {"received": True}
+
+# =============================================================================
+# LEGACY SUBSCRIPTION STATUS
+# =============================================================================
 @api_router.get("/subscriptions/status")
 async def get_subscription_status(current_user: User = Depends(get_current_user)):
     subscription = await db.subscriptions.find_one(
         {"user_id": current_user.id, "status": "active"},
         {"_id": 0}
     )
-    
-    return {
-        "has_subscription": subscription is not None,
-        "subscription": subscription
-    }
+    return {"has_subscription": subscription is not None, "subscription": subscription}
 
-# Earnings Routes
-@api_router.get("/earnings", response_model=List[Earning])
+# =============================================================================
+# EARNINGS & STREAMER CONNECT (Stripe Connect mock)
+# =============================================================================
+@api_router.get("/earnings")
 async def get_earnings(current_user: User = Depends(get_current_user)):
-    if current_user.role != "streamer" and current_user.role != "admin":
+    if current_user.role not in ("streamer", "admin"):
         raise HTTPException(status_code=403, detail="Streamer access required")
-    
-    earnings = await db.earnings.find(
-        {"streamer_id": current_user.id},
-        {"_id": 0}
-    ).sort("created_at", -1).to_list(1000)
-    
-    return earnings
+    return await db.earnings.find({"streamer_id": current_user.id}, {"_id": 0}).sort("created_at", -1).to_list(1000)
 
 @api_router.get("/earnings/total")
 async def get_total_earnings(current_user: User = Depends(get_current_user)):
-    if current_user.role != "streamer" and current_user.role != "admin":
+    if current_user.role not in ("streamer", "admin"):
         raise HTTPException(status_code=403, detail="Streamer access required")
-    
     pipeline = [
         {"$match": {"streamer_id": current_user.id}},
         {"$group": {"_id": None, "total": {"$sum": "$amount"}}}
     ]
-    
     result = await db.earnings.aggregate(pipeline).to_list(1)
     total = result[0]['total'] if result else 0
-    
-    return {"total_earnings": total}
+    return {"total_earnings": round(total, 4)}
 
-# Include the router in the main app
+@api_router.post("/streamers/connect/onboard")
+async def connect_onboard(current_user: User = Depends(get_current_user)):
+    """Mock Stripe Connect Express onboarding link. In production this would call
+    stripe.AccountLinks.create(...) after stripe.Account.create(type='express')."""
+    if current_user.role != "streamer":
+        raise HTTPException(status_code=403, detail="Streamer access required")
+    await db.users.update_one(
+        {"id": current_user.id},
+        {"$set": {"connect_account_status": "active", "connect_onboarded_at": now_iso()}}
+    )
+    return {
+        "message": "Connect onboarding complete (mock)",
+        "onboarding_url": "https://connect.stripe.com/express/onboarding/mock",
+        "status": "active",
+    }
+
+# =============================================================================
+# ADMIN COMMAND CENTER
+# =============================================================================
+@api_router.get("/admin/stats")
+async def admin_stats(_admin: User = Depends(require_admin)):
+    users_total = await db.users.count_documents({})
+    viewers = await db.users.count_documents({"role": "viewer"})
+    streamers = await db.users.count_documents({"role": "streamer"})
+    active_subs = await db.users.count_documents({"subscription_status": "active"})
+    streams_total = await db.live_streams.count_documents({})
+    streams_live = await db.live_streams.count_documents({"is_live": True})
+    content_total = await db.content.count_documents({"is_promo": {"$ne": True}})
+    promos_total = await db.content.count_documents({"is_promo": True})
+
+    total_revenue_pipeline = [{"$group": {"_id": None, "total": {"$sum": "$amount"}}}]
+    rev = await db.payment_transactions.aggregate([
+        {"$match": {"processed": True}},
+        *total_revenue_pipeline
+    ]).to_list(1)
+    total_revenue = rev[0]["total"] if rev else 0.0
+
+    payouts = await db.earnings.aggregate(total_revenue_pipeline).to_list(1)
+    total_payouts = payouts[0]["total"] if payouts else 0.0
+
+    gifts_count = await db.gifts.count_documents({})
+
+    return {
+        "users": {"total": users_total, "viewers": viewers, "streamers": streamers, "active_subscriptions": active_subs},
+        "streams": {"total": streams_total, "live_now": streams_live},
+        "content": {"total": content_total, "promos": promos_total},
+        "gifts": {"total_sent": gifts_count},
+        "financials": {
+            "total_revenue": round(total_revenue, 2),
+            "total_payouts_owed": round(total_payouts, 4),
+            "net": round(total_revenue - total_payouts, 2),
+        },
+    }
+
+@api_router.get("/admin/users")
+async def admin_users(_admin: User = Depends(require_admin)):
+    users = await db.users.find({}, {"_id": 0, "password_hash": 0}).sort("created_at", -1).to_list(1000)
+    return {"users": users}
+
+@api_router.get("/admin/settings")
+async def admin_get_settings(_admin: User = Depends(require_admin)):
+    return await get_settings()
+
+@api_router.post("/admin/settings")
+async def admin_update_settings(body: AdminSettingsUpdate, _admin: User = Depends(require_admin)):
+    updates = {k: v for k, v in body.model_dump().items() if v is not None}
+    if not updates:
+        raise HTTPException(status_code=400, detail="No settings to update")
+    updates["updated_at"] = now_iso()
+    await db.settings.update_one({"id": "global"}, {"$set": updates}, upsert=True)
+    return await get_settings()
+
+@api_router.post("/admin/payouts/trigger")
+async def admin_trigger_payouts(_admin: User = Depends(require_admin)):
+    """Mark all pending earnings as paid out. In production this would call
+    stripe.Transfer.create(...) for each streamer's Connect account."""
+    pipeline = [
+        {"$match": {"paid_out": {"$ne": True}}},
+        {"$group": {"_id": "$streamer_id", "total": {"$sum": "$amount"}, "count": {"$sum": 1}}},
+    ]
+    by_streamer = await db.earnings.aggregate(pipeline).to_list(10000)
+    await db.earnings.update_many({"paid_out": {"$ne": True}}, {"$set": {"paid_out": True, "paid_out_at": now_iso()}})
+    for row in by_streamer:
+        await db.payouts.insert_one({
+            "id": str(uuid.uuid4()),
+            "streamer_id": row["_id"],
+            "amount": round(row["total"], 4),
+            "earnings_count": row["count"],
+            "status": "completed_mock",
+            "processed_at": now_iso(),
+        })
+    total_paid = round(sum(r["total"] for r in by_streamer), 4)
+    return {"message": "Payouts processed", "streamers_paid": len(by_streamer), "total_paid": total_paid}
+
+@api_router.get("/admin/payouts")
+async def admin_list_payouts(_admin: User = Depends(require_admin)):
+    payouts = await db.payouts.find({}, {"_id": 0}).sort("processed_at", -1).to_list(1000)
+    return {"payouts": payouts}
+
+# =============================================================================
+# APP SETUP
+# =============================================================================
 app.include_router(api_router)
 
 app.add_middleware(
@@ -525,7 +901,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'

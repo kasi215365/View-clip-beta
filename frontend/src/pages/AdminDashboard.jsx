@@ -5,336 +5,356 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Video, Upload, LogOut, User as UserIcon, Home, Radio } from 'lucide-react';
+import { Upload, LogOut, User as UserIcon, Home, Radio, Shield, Settings as SettingsIcon, Banknote, AlertTriangle, Megaphone, Users2, BarChart3, Trash2 } from 'lucide-react';
+import Logo from '@/components/Logo';
 import axios from 'axios';
 import { toast } from 'sonner';
 
 const AdminDashboard = () => {
   const navigate = useNavigate();
   const { user, logout } = useContext(AuthContext);
+  const [stats, setStats] = useState(null);
+  const [users, setUsers] = useState([]);
+  const [settings, setSettings] = useState(null);
+  const [promos, setPromos] = useState([]);
+  const [payouts, setPayouts] = useState([]);
   const [content, setContent] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [newContent, setNewContent] = useState({
-    title: '',
-    description: '',
-    type: 'movie',
-    video_url: '',
-    thumbnail_url: '',
-    duration: 0
-  });
+  const [newContent, setNewContent] = useState({ title: '', description: '', type: 'movie', video_url: '', thumbnail_url: '', duration: 0 });
+  const [newPromo, setNewPromo] = useState({ title: '', description: '', thumbnail_url: '', video_url: '' });
 
-  useEffect(() => {
-    fetchContent();
-  }, []);
+  useEffect(() => { fetchAll(); }, []);
 
-  const fetchContent = async () => {
+  const fetchAll = async () => {
     try {
-      const response = await axios.get(`${API}/content`);
-      setContent(response.data);
-    } catch (error) {
-      toast.error('Failed to load content');
+      const [s, u, st, p, pay, c] = await Promise.all([
+        axios.get(`${API}/admin/stats`),
+        axios.get(`${API}/admin/users`),
+        axios.get(`${API}/admin/settings`),
+        axios.get(`${API}/promos`),
+        axios.get(`${API}/admin/payouts`),
+        axios.get(`${API}/content`),
+      ]);
+      setStats(s.data);
+      setUsers(u.data.users);
+      setSettings(st.data);
+      setPromos(p.data);
+      setPayouts(pay.data.payouts);
+      setContent(c.data);
+    } catch (e) {
+      toast.error('Failed to load admin data');
     }
   };
 
-  const handleSubmit = async (e) => {
+  const handleSettingChange = (field, value) => {
+    setSettings((s) => ({ ...s, [field]: value }));
+  };
+
+  const saveSettings = async () => {
+    try {
+      const res = await axios.post(`${API}/admin/settings`, {
+        viewer_sub_price: Number(settings.viewer_sub_price),
+        streamer_sub_price: Number(settings.streamer_sub_price),
+        earnings_per_view: Number(settings.earnings_per_view),
+        view_threshold_minutes: Number(settings.view_threshold_minutes),
+        gift_base_rate: Number(settings.gift_base_rate),
+        budget_alert_percent: Number(settings.budget_alert_percent),
+        maintenance_mode: !!settings.maintenance_mode,
+      });
+      setSettings(res.data);
+      toast.success('Settings saved');
+    } catch (e) {
+      toast.error('Failed to save settings');
+    }
+  };
+
+  const triggerPayouts = async () => {
+    if (!window.confirm('Process payouts for all streamers now?')) return;
+    try {
+      const r = await axios.post(`${API}/admin/payouts/trigger`);
+      toast.success(`Paid ${r.data.streamers_paid} streamers · $${r.data.total_paid}`);
+      fetchAll();
+    } catch (e) {
+      toast.error('Payout failed');
+    }
+  };
+
+  const handleContentSubmit = async (e) => {
     e.preventDefault();
     setLoading(true);
-
     try {
-      await axios.post(`${API}/content`, newContent);
-      toast.success('Content uploaded successfully!');
-      setNewContent({
-        title: '',
-        description: '',
-        type: 'movie',
-        video_url: '',
-        thumbnail_url: '',
-        duration: 0
-      });
-      fetchContent();
-    } catch (error) {
-      toast.error(error.response?.data?.detail || 'Failed to upload content');
-    } finally {
-      setLoading(false);
-    }
+      await axios.post(`${API}/content`, { ...newContent, is_promo: false });
+      toast.success('Content uploaded');
+      setNewContent({ title: '', description: '', type: 'movie', video_url: '', thumbnail_url: '', duration: 0 });
+      fetchAll();
+    } catch (e) { toast.error('Upload failed'); } finally { setLoading(false); }
   };
 
-  const handleLoadSampleData = async () => {
-    setLoading(true);
-    const sampleContent = [
-      {
-        title: 'Epic Adventure Movie',
-        description: 'An incredible journey through uncharted territories with stunning visuals and an engaging storyline.',
-        type: 'movie',
-        video_url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4',
-        thumbnail_url: 'https://images.unsplash.com/photo-1536440136628-849c177e76a1?w=800',
-        duration: 7200
-      },
-      {
-        title: 'Mystery Series S01E01',
-        description: 'The first episode of an exciting mystery series that will keep you on the edge of your seat.',
-        type: 'tv-show',
-        video_url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ElephantsDream.mp4',
-        thumbnail_url: 'https://images.unsplash.com/photo-1598899134739-24c46f58b8c0?w=800',
-        duration: 3600
-      },
-      {
-        title: 'Championship Finals Live',
-        description: 'Watch the most anticipated championship finals with live commentary and expert analysis.',
-        type: 'sport',
-        video_url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4',
-        thumbnail_url: 'https://images.unsplash.com/photo-1461896836934-ffe607ba8211?w=800',
-        duration: 5400
-      },
-      {
-        title: 'Sci-Fi Blockbuster',
-        description: 'A groundbreaking sci-fi film with cutting-edge special effects and a mind-bending plot.',
-        type: 'movie',
-        video_url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerEscapes.mp4',
-        thumbnail_url: 'https://images.unsplash.com/photo-1534447677768-be436bb09401?w=800',
-        duration: 8100
-      },
-      {
-        title: 'Comedy Show Special',
-        description: 'Hilarious stand-up comedy special featuring top comedians from around the world.',
-        type: 'tv-show',
-        video_url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerFun.mp4',
-        thumbnail_url: 'https://images.unsplash.com/photo-1527224857830-43a7acc85260?w=800',
-        duration: 2700
-      },
-      {
-        title: 'Soccer World Cup Highlights',
-        description: 'Relive the best moments from the World Cup with extended highlights and interviews.',
-        type: 'sport',
-        video_url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerJoyrides.mp4',
-        thumbnail_url: 'https://images.unsplash.com/photo-1574629810360-7efbbe195018?w=800',
-        duration: 4500
-      }
-    ];
-
+  const handlePromoSubmit = async (e) => {
+    e.preventDefault();
     try {
-      for (const item of sampleContent) {
-        await axios.post(`${API}/content`, item);
-      }
-      toast.success('Sample content loaded successfully!');
-      fetchContent();
-    } catch (error) {
-      toast.error('Failed to load sample content');
-    } finally {
-      setLoading(false);
-    }
+      await axios.post(`${API}/promos`, newPromo);
+      toast.success('Promo created');
+      setNewPromo({ title: '', description: '', thumbnail_url: '', video_url: '' });
+      fetchAll();
+    } catch (e) { toast.error('Promo create failed'); }
+  };
+
+  const deletePromo = async (id) => {
+    try { await axios.delete(`${API}/promos/${id}`); toast.success('Promo deleted'); fetchAll(); }
+    catch (e) { toast.error('Delete failed'); }
+  };
+
+  const handleSample = async () => {
+    setLoading(true);
+    const samples = [
+      { title: 'Epic Adventure', description: 'Breathtaking journey.', type: 'movie', video_url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4', thumbnail_url: 'https://images.unsplash.com/photo-1536440136628-849c177e76a1?w=800', duration: 7200 },
+      { title: 'Mystery Series S01E01', description: 'Edge of your seat.', type: 'tv-show', video_url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ElephantsDream.mp4', thumbnail_url: 'https://images.unsplash.com/photo-1598899134739-24c46f58b8c0?w=800', duration: 3600 },
+      { title: 'Championship Finals', description: 'Live sports action.', type: 'sport', video_url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4', thumbnail_url: 'https://images.unsplash.com/photo-1461896836934-ffe607ba8211?w=800', duration: 5400 },
+    ];
+    try { for (const s of samples) await axios.post(`${API}/content`, { ...s, is_promo: false }); toast.success('Sample data loaded'); fetchAll(); }
+    catch (e) { toast.error('Failed to load sample data'); } finally { setLoading(false); }
   };
 
   return (
-    <div className="min-h-screen bg-[#0A0E27] text-white">
-      {/* Navigation */}
+    <div className="min-h-screen bg-[#05070F] text-white">
       <nav className="fixed top-0 w-full z-50 glass-effect px-6 py-4">
         <div className="max-w-7xl mx-auto flex justify-between items-center">
-          <div className="flex items-center space-x-2">
-            <Video className="w-8 h-8 text-cyan-400" />
-            <h1 className="text-2xl font-bold">StreamHub</h1>
-          </div>
+          <div className="flex items-center gap-3"><Logo size="md" /><span className="hidden md:flex text-xs bg-fuchsia-500/20 text-fuchsia-300 px-2 py-1 rounded">COMMAND CENTER</span></div>
           <div className="flex items-center space-x-4">
-            <Button data-testid="browse-nav-btn" onClick={() => navigate('/browse')} variant="ghost" className="text-white hover:text-cyan-400">
-              <Home className="w-4 h-4 mr-2" />
-              Browse
-            </Button>
-            <Button data-testid="live-nav-btn" onClick={() => navigate('/live')} variant="ghost" className="text-white hover:text-cyan-400">
-              <Radio className="w-4 h-4 mr-2" />
-              Live
-            </Button>
-            <Button data-testid="streamer-nav-btn" onClick={() => navigate('/streamer')} variant="ghost" className="text-white hover:text-cyan-400">
-              Dashboard
-            </Button>
-            <Button data-testid="admin-nav-btn" onClick={() => navigate('/admin')} variant="ghost" className="text-cyan-400">
-              Admin
-            </Button>
-            <Button data-testid="profile-nav-btn" onClick={() => navigate('/profile')} variant="ghost" className="text-white hover:text-cyan-400">
-              <UserIcon className="w-4 h-4 mr-2" />
-              Profile
-            </Button>
-            <Button data-testid="logout-nav-btn" onClick={logout} variant="ghost" className="text-white hover:text-red-400">
-              <LogOut className="w-4 h-4" />
-            </Button>
+            <Button data-testid="browse-nav-btn" onClick={() => navigate('/browse')} variant="ghost" className="text-white hover:text-cyan-400"><Home className="w-4 h-4 mr-2" />Browse</Button>
+            <Button data-testid="live-nav-btn" onClick={() => navigate('/live')} variant="ghost" className="text-white hover:text-cyan-400"><Radio className="w-4 h-4 mr-2" />Live</Button>
+            <Button data-testid="admin-nav-btn" onClick={() => navigate('/admin')} variant="ghost" className="text-cyan-400">Admin</Button>
+            <Button data-testid="profile-nav-btn" onClick={() => navigate('/profile')} variant="ghost" className="text-white hover:text-cyan-400"><UserIcon className="w-4 h-4 mr-2" />Profile</Button>
+            <Button data-testid="logout-nav-btn" onClick={logout} variant="ghost" className="text-white hover:text-red-400"><LogOut className="w-4 h-4" /></Button>
           </div>
         </div>
       </nav>
 
       <div className="pt-24 px-6 pb-12">
         <div className="max-w-7xl mx-auto">
-          {/* Header */}
-          <div className="mb-8">
-            <h1 className="text-4xl font-bold mb-2">Admin Dashboard</h1>
-            <p className="text-gray-400">Upload and manage platform content</p>
+          <div className="mb-6 flex items-center gap-3">
+            <Shield className="w-8 h-8 text-fuchsia-400" />
+            <h1 className="text-4xl font-bold">Admin Command Center</h1>
           </div>
 
-          <div className="grid lg:grid-cols-2 gap-8">
-            {/* Upload Form */}
-            <div data-testid="upload-form" className="glass-effect rounded-xl p-8">
-              <div className="flex items-center justify-between mb-6">
-                <h2 className="text-2xl font-bold flex items-center">
-                  <Upload className="w-6 h-6 mr-3 text-cyan-400" />
-                  Upload Content
-                </h2>
-              </div>
-
-              <form onSubmit={handleSubmit} className="space-y-4">
-                <div>
-                  <Label htmlFor="title">Title</Label>
-                  <Input
-                    data-testid="content-title-input"
-                    id="title"
-                    value={newContent.title}
-                    onChange={(e) => setNewContent({ ...newContent, title: e.target.value })}
-                    required
-                    className="bg-white/5 border-white/10 text-white mt-2"
-                    placeholder="Content title"
-                  />
-                </div>
-
-                <div>
-                  <Label htmlFor="description">Description</Label>
-                  <Textarea
-                    data-testid="content-description-input"
-                    id="description"
-                    value={newContent.description}
-                    onChange={(e) => setNewContent({ ...newContent, description: e.target.value })}
-                    required
-                    className="bg-white/5 border-white/10 text-white mt-2"
-                    placeholder="Describe the content"
-                    rows={3}
-                  />
-                </div>
-
-                <div>
-                  <Label htmlFor="type">Type</Label>
-                  <Select
-                    value={newContent.type}
-                    onValueChange={(value) => setNewContent({ ...newContent, type: value })}
-                  >
-                    <SelectTrigger data-testid="content-type-select" className="bg-white/5 border-white/10 text-white mt-2">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent className="bg-[#0D1234] border-white/10 text-white">
-                      <SelectItem value="movie">Movie</SelectItem>
-                      <SelectItem value="tv-show">TV Show</SelectItem>
-                      <SelectItem value="sport">Sport</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                <div>
-                  <Label htmlFor="video-url">Video URL</Label>
-                  <Input
-                    data-testid="content-video-input"
-                    id="video-url"
-                    value={newContent.video_url}
-                    onChange={(e) => setNewContent({ ...newContent, video_url: e.target.value })}
-                    required
-                    className="bg-white/5 border-white/10 text-white mt-2"
-                    placeholder="https://example.com/video.mp4"
-                  />
-                </div>
-
-                <div>
-                  <Label htmlFor="thumbnail-url">Thumbnail URL</Label>
-                  <Input
-                    data-testid="content-thumbnail-input"
-                    id="thumbnail-url"
-                    value={newContent.thumbnail_url}
-                    onChange={(e) => setNewContent({ ...newContent, thumbnail_url: e.target.value })}
-                    required
-                    className="bg-white/5 border-white/10 text-white mt-2"
-                    placeholder="https://example.com/thumbnail.jpg"
-                  />
-                </div>
-
-                <div>
-                  <Label htmlFor="duration">Duration (seconds)</Label>
-                  <Input
-                    data-testid="content-duration-input"
-                    id="duration"
-                    type="number"
-                    value={newContent.duration}
-                    onChange={(e) => setNewContent({ ...newContent, duration: Number(e.target.value) })}
-                    required
-                    className="bg-white/5 border-white/10 text-white mt-2"
-                    placeholder="7200"
-                  />
-                </div>
-
-                <Button
-                  data-testid="upload-content-btn"
-                  type="submit"
-                  disabled={loading}
-                  className="w-full bg-cyan-400 text-[#0A0E27] hover:bg-cyan-500 py-6 rounded-xl"
-                >
-                  {loading ? 'Uploading...' : 'Upload Content'}
-                </Button>
-              </form>
-
-              <div className="mt-6 pt-6 border-t border-white/10">
-                <Button
-                  data-testid="load-sample-data-btn"
-                  onClick={handleLoadSampleData}
-                  disabled={loading}
-                  className="w-full bg-purple-600 hover:bg-purple-700 py-6 rounded-xl"
-                >
-                  Load Sample Data
-                </Button>
-                <p className="text-xs text-gray-500 mt-3 text-center">
-                  Quickly populate the platform with sample movies, TV shows, and sports content
-                </p>
-              </div>
+          {/* Top-line stats */}
+          {stats && (
+            <div data-testid="admin-stats" className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+              <StatCard label="Users" value={stats.users.total} sub={`${stats.users.streamers} streamers`} icon={<Users2 className="w-6 h-6" />} color="cyan" />
+              <StatCard label="Active Subs" value={stats.users.active_subscriptions} icon={<Banknote className="w-6 h-6" />} color="green" />
+              <StatCard label="Live Streams" value={stats.streams.live_now} sub={`${stats.streams.total} total`} icon={<Radio className="w-6 h-6" />} color="red" />
+              <StatCard label="Revenue" value={`$${stats.financials.total_revenue.toFixed(2)}`} sub={`Owed: $${stats.financials.total_payouts_owed.toFixed(2)}`} icon={<BarChart3 className="w-6 h-6" />} color="fuchsia" />
             </div>
+          )}
 
-            {/* Content List */}
-            <div className="glass-effect rounded-xl p-8">
-              <h2 className="text-2xl font-bold mb-6">Current Content</h2>
-              
-              {content.length === 0 ? (
-                <div data-testid="no-content-admin" className="text-center py-12">
-                  <Video className="w-12 h-12 text-gray-600 mx-auto mb-3" />
-                  <p className="text-gray-400">No content uploaded yet</p>
-                </div>
-              ) : (
-                <div className="space-y-4 max-h-[600px] overflow-y-auto pr-2">
-                  {content.map((item) => (
-                    <div key={item.id} data-testid={`admin-content-${item.id}`} className="bg-white/5 rounded-lg p-4 hover:bg-white/10 transition-colors">
-                      <div className="flex items-start space-x-4">
-                        <div className="w-24 h-16 rounded-lg bg-gradient-to-br from-cyan-500/20 to-purple-500/20 flex-shrink-0 overflow-hidden">
-                          <img
-                            src={item.thumbnail_url}
-                            alt={item.title}
-                            className="w-full h-full object-cover"
-                            onError={(e) => {
-                              e.target.style.display = 'none';
-                            }}
-                          />
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <h3 className="font-semibold mb-1 truncate">{item.title}</h3>
-                          <p className="text-sm text-gray-400 line-clamp-2 mb-2">{item.description}</p>
-                          <div className="flex items-center space-x-4 text-xs text-gray-500">
-                            <span className="bg-cyan-400/20 text-cyan-400 px-2 py-1 rounded uppercase font-semibold">
-                              {item.type}
-                            </span>
-                            <span>{item.views} views</span>
-                            <span>{Math.floor(item.duration / 60)}m</span>
-                          </div>
-                        </div>
-                      </div>
+          <Tabs defaultValue="settings" className="w-full">
+            <TabsList className="grid w-full grid-cols-5 bg-white/5 mb-6">
+              <TabsTrigger data-testid="tab-settings" value="settings"><SettingsIcon className="w-4 h-4 mr-2" />Settings</TabsTrigger>
+              <TabsTrigger data-testid="tab-content" value="content"><Upload className="w-4 h-4 mr-2" />Content</TabsTrigger>
+              <TabsTrigger data-testid="tab-promos" value="promos"><Megaphone className="w-4 h-4 mr-2" />Promos</TabsTrigger>
+              <TabsTrigger data-testid="tab-users" value="users"><Users2 className="w-4 h-4 mr-2" />Users</TabsTrigger>
+              <TabsTrigger data-testid="tab-payouts" value="payouts"><Banknote className="w-4 h-4 mr-2" />Payouts</TabsTrigger>
+            </TabsList>
+
+            {/* SETTINGS */}
+            <TabsContent value="settings">
+              {settings && (
+                <div className="grid lg:grid-cols-2 gap-6">
+                  <div className="glass-panel rounded-xl p-6">
+                    <h3 className="text-xl font-bold mb-4">Platform Rates</h3>
+                    <SettingRow label="Viewer Subscription ($/mo)" testid="setting-viewer-sub">
+                      <Input type="number" step="0.01" value={settings.viewer_sub_price} onChange={(e) => handleSettingChange('viewer_sub_price', e.target.value)} className="bg-white/5 border-white/10" />
+                    </SettingRow>
+                    <SettingRow label="Streamer Subscription ($/mo)" testid="setting-streamer-sub">
+                      <Input type="number" step="0.01" value={settings.streamer_sub_price} onChange={(e) => handleSettingChange('streamer_sub_price', e.target.value)} className="bg-white/5 border-white/10" />
+                    </SettingRow>
+                    <SettingRow label="Earnings per qualified view ($)" testid="setting-earnings-view">
+                      <Input type="number" step="0.0001" value={settings.earnings_per_view} onChange={(e) => handleSettingChange('earnings_per_view', e.target.value)} className="bg-white/5 border-white/10" />
+                    </SettingRow>
+                    <SettingRow label="View threshold (minutes)" testid="setting-threshold">
+                      <Input type="number" value={settings.view_threshold_minutes} onChange={(e) => handleSettingChange('view_threshold_minutes', e.target.value)} className="bg-white/5 border-white/10" />
+                    </SettingRow>
+                    <SettingRow label="Gift base rate ($)" testid="setting-gift-base">
+                      <Input type="number" step="0.0001" value={settings.gift_base_rate} onChange={(e) => handleSettingChange('gift_base_rate', e.target.value)} className="bg-white/5 border-white/10" />
+                    </SettingRow>
+                  </div>
+
+                  <div className="glass-panel rounded-xl p-6">
+                    <h3 className="text-xl font-bold mb-4 flex items-center"><AlertTriangle className="w-5 h-5 mr-2 text-yellow-400" />Budget Alert & System</h3>
+                    <div className="mb-4">
+                      <Label>Bandwidth/Budget Alert Threshold ({settings.budget_alert_percent}%)</Label>
+                      <input data-testid="setting-budget-percent" type="range" min="10" max="100" value={settings.budget_alert_percent}
+                        onChange={(e) => handleSettingChange('budget_alert_percent', Number(e.target.value))}
+                        className="w-full mt-2 accent-fuchsia-500" />
+                      <p className="text-xs text-gray-400 mt-1">Cap bandwidth if cloud bill hits this % of budget.</p>
                     </div>
-                  ))}
+                    <SettingRow label="Maintenance Mode" testid="setting-maintenance">
+                      <label className="inline-flex items-center cursor-pointer">
+                        <input type="checkbox" checked={!!settings.maintenance_mode} onChange={(e) => handleSettingChange('maintenance_mode', e.target.checked)} className="sr-only peer" />
+                        <div className="relative w-11 h-6 bg-gray-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-0.5 after:start-0.5 after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-fuchsia-500"></div>
+                      </label>
+                    </SettingRow>
+                    <Button data-testid="save-settings-btn" onClick={saveSettings} className="w-full mt-4 bg-cyan-400 text-[#05070F] hover:bg-cyan-300 font-semibold">Save Settings</Button>
+                  </div>
                 </div>
               )}
-            </div>
-          </div>
+            </TabsContent>
+
+            {/* CONTENT */}
+            <TabsContent value="content">
+              <div className="grid lg:grid-cols-2 gap-6">
+                <div className="glass-panel rounded-xl p-6">
+                  <h3 className="text-xl font-bold mb-4">Upload Content</h3>
+                  <form onSubmit={handleContentSubmit} className="space-y-3">
+                    <Input data-testid="content-title-input" placeholder="Title" value={newContent.title} onChange={(e) => setNewContent({ ...newContent, title: e.target.value })} required className="bg-white/5 border-white/10" />
+                    <Textarea data-testid="content-description-input" placeholder="Description" value={newContent.description} onChange={(e) => setNewContent({ ...newContent, description: e.target.value })} required className="bg-white/5 border-white/10" />
+                    <Select value={newContent.type} onValueChange={(v) => setNewContent({ ...newContent, type: v })}>
+                      <SelectTrigger data-testid="content-type-select" className="bg-white/5 border-white/10"><SelectValue /></SelectTrigger>
+                      <SelectContent className="bg-[#0A0E27] border-white/10"><SelectItem value="movie">Movie</SelectItem><SelectItem value="tv-show">TV Show</SelectItem><SelectItem value="sport">Sport</SelectItem></SelectContent>
+                    </Select>
+                    <Input data-testid="content-video-input" placeholder="Video URL" value={newContent.video_url} onChange={(e) => setNewContent({ ...newContent, video_url: e.target.value })} required className="bg-white/5 border-white/10" />
+                    <Input data-testid="content-thumbnail-input" placeholder="Thumbnail URL" value={newContent.thumbnail_url} onChange={(e) => setNewContent({ ...newContent, thumbnail_url: e.target.value })} required className="bg-white/5 border-white/10" />
+                    <Input data-testid="content-duration-input" type="number" placeholder="Duration (sec)" value={newContent.duration} onChange={(e) => setNewContent({ ...newContent, duration: Number(e.target.value) })} required className="bg-white/5 border-white/10" />
+                    <Button data-testid="upload-content-btn" type="submit" disabled={loading} className="w-full bg-cyan-400 text-[#05070F] hover:bg-cyan-300 font-semibold">{loading ? 'Uploading…' : 'Upload'}</Button>
+                    <Button data-testid="load-sample-data-btn" type="button" onClick={handleSample} disabled={loading} className="w-full bg-fuchsia-500 hover:bg-fuchsia-600">Load Sample Data</Button>
+                  </form>
+                </div>
+                <div className="glass-panel rounded-xl p-6">
+                  <h3 className="text-xl font-bold mb-4">Library ({content.length})</h3>
+                  <div className="space-y-2 max-h-[500px] overflow-y-auto">
+                    {content.map((c) => (
+                      <div key={c.id} data-testid={`admin-content-${c.id}`} className="bg-white/5 rounded p-3 flex items-center gap-3">
+                        <img src={c.thumbnail_url} alt="" className="w-20 h-12 object-cover rounded" onError={(e) => e.target.style.display = 'none'} />
+                        <div className="flex-1 min-w-0">
+                          <div className="font-semibold truncate">{c.title}</div>
+                          <div className="text-xs text-gray-400">{c.type} · {c.views} views</div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </TabsContent>
+
+            {/* PROMOS */}
+            <TabsContent value="promos">
+              <div className="grid lg:grid-cols-2 gap-6">
+                <div className="glass-panel rounded-xl p-6">
+                  <h3 className="text-xl font-bold mb-4 flex items-center"><Megaphone className="w-5 h-5 mr-2 text-fuchsia-400" />Self-Promotion Engine</h3>
+                  <p className="text-gray-400 text-sm mb-4">Promos are injected into the Browse feed to establish View/Clip brand identity.</p>
+                  <form onSubmit={handlePromoSubmit} className="space-y-3">
+                    <Input data-testid="promo-title-input" placeholder="Promo Title" value={newPromo.title} onChange={(e) => setNewPromo({ ...newPromo, title: e.target.value })} required className="bg-white/5 border-white/10" />
+                    <Textarea data-testid="promo-description-input" placeholder="Description" value={newPromo.description} onChange={(e) => setNewPromo({ ...newPromo, description: e.target.value })} required className="bg-white/5 border-white/10" />
+                    <Input data-testid="promo-thumbnail-input" placeholder="Thumbnail URL" value={newPromo.thumbnail_url} onChange={(e) => setNewPromo({ ...newPromo, thumbnail_url: e.target.value })} required className="bg-white/5 border-white/10" />
+                    <Input data-testid="promo-video-input" placeholder="Video URL" value={newPromo.video_url} onChange={(e) => setNewPromo({ ...newPromo, video_url: e.target.value })} required className="bg-white/5 border-white/10" />
+                    <Button data-testid="create-promo-btn" type="submit" className="w-full bg-fuchsia-500 hover:bg-fuchsia-600">Create Promo</Button>
+                  </form>
+                </div>
+                <div className="glass-panel rounded-xl p-6">
+                  <h3 className="text-xl font-bold mb-4">Active Promos ({promos.length})</h3>
+                  <div className="space-y-2">
+                    {promos.map((p) => (
+                      <div key={p.id} data-testid={`promo-${p.id}`} className="bg-white/5 rounded p-3 flex items-center gap-3">
+                        <img src={p.thumbnail_url} alt="" className="w-20 h-12 object-cover rounded" onError={(e) => e.target.style.display = 'none'} />
+                        <div className="flex-1 min-w-0">
+                          <div className="font-semibold truncate">{p.title}</div>
+                          <div className="text-xs text-gray-400 truncate">{p.description}</div>
+                        </div>
+                        <Button data-testid={`delete-promo-${p.id}`} onClick={() => deletePromo(p.id)} size="sm" className="bg-red-500/20 hover:bg-red-500/40 text-red-300"><Trash2 className="w-3 h-3" /></Button>
+                      </div>
+                    ))}
+                    {promos.length === 0 && <p className="text-gray-500 text-sm">No promos yet</p>}
+                  </div>
+                </div>
+              </div>
+            </TabsContent>
+
+            {/* USERS */}
+            <TabsContent value="users">
+              <div className="glass-panel rounded-xl p-6">
+                <h3 className="text-xl font-bold mb-4">Users ({users.length})</h3>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead className="bg-white/5"><tr><th className="text-left p-3">Name</th><th className="text-left p-3">Email</th><th className="text-left p-3">Role</th><th className="text-left p-3">Sub</th><th className="text-left p-3">Joined</th></tr></thead>
+                    <tbody>
+                      {users.map((u) => (
+                        <tr key={u.id} data-testid={`admin-user-${u.id}`} className="border-t border-white/5">
+                          <td className="p-3">{u.name}</td><td className="p-3 text-gray-400">{u.email}</td>
+                          <td className="p-3"><span className="capitalize bg-white/5 px-2 py-1 rounded text-xs">{u.role}</span></td>
+                          <td className="p-3">{u.subscription_status === 'active' ? <span className="text-green-400">active</span> : <span className="text-gray-500">inactive</span>}</td>
+                          <td className="p-3 text-gray-400">{new Date(u.created_at).toLocaleDateString()}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </TabsContent>
+
+            {/* PAYOUTS */}
+            <TabsContent value="payouts">
+              <div className="glass-panel rounded-xl p-6 mb-6 flex items-center justify-between">
+                <div>
+                  <h3 className="text-xl font-bold mb-1">Streamer Payouts</h3>
+                  <p className="text-gray-400 text-sm">Batch-process earnings to Connect accounts.</p>
+                </div>
+                <Button data-testid="trigger-payouts-btn" onClick={triggerPayouts} className="bg-green-500 hover:bg-green-600">Process Payouts</Button>
+              </div>
+              <div className="glass-panel rounded-xl p-6">
+                <h3 className="text-lg font-bold mb-4">Payout History ({payouts.length})</h3>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead className="bg-white/5"><tr><th className="text-left p-3">Date</th><th className="text-left p-3">Streamer ID</th><th className="text-right p-3">Earnings Count</th><th className="text-right p-3">Amount</th><th className="text-left p-3">Status</th></tr></thead>
+                    <tbody>
+                      {payouts.map((p) => (
+                        <tr key={p.id} data-testid={`payout-${p.id}`} className="border-t border-white/5">
+                          <td className="p-3 text-gray-400">{new Date(p.processed_at).toLocaleString()}</td>
+                          <td className="p-3 text-xs font-mono text-gray-400">{p.streamer_id.slice(0, 8)}…</td>
+                          <td className="p-3 text-right">{p.earnings_count}</td>
+                          <td className="p-3 text-right text-green-400 font-semibold">${p.amount.toFixed(3)}</td>
+                          <td className="p-3"><span className="text-xs bg-green-500/20 text-green-300 px-2 py-1 rounded">{p.status}</span></td>
+                        </tr>
+                      ))}
+                      {payouts.length === 0 && <tr><td colSpan="5" className="p-8 text-center text-gray-500">No payouts processed yet.</td></tr>}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </TabsContent>
+          </Tabs>
         </div>
       </div>
     </div>
   );
 };
+
+const StatCard = ({ label, value, sub, icon, color }) => {
+  const colors = {
+    cyan: 'text-cyan-400 bg-cyan-400/10',
+    green: 'text-green-400 bg-green-400/10',
+    red: 'text-red-400 bg-red-400/10',
+    fuchsia: 'text-fuchsia-400 bg-fuchsia-400/10',
+  };
+  return (
+    <div className="glass-panel rounded-xl p-5">
+      <div className="flex items-center justify-between mb-3">
+        <div className={`${colors[color]} p-2 rounded-lg`}>{icon}</div>
+      </div>
+      <div className="text-2xl font-bold">{value}</div>
+      <div className="text-gray-400 text-sm">{label}</div>
+      {sub && <div className="text-xs text-gray-500 mt-1">{sub}</div>}
+    </div>
+  );
+};
+
+const SettingRow = ({ label, children, testid }) => (
+  <div data-testid={testid} className="mb-3">
+    <Label className="text-sm text-gray-300">{label}</Label>
+    <div className="mt-1">{children}</div>
+  </div>
+);
 
 export default AdminDashboard;

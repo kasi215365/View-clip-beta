@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { AuthContext, API } from '@/App';
 import { Button } from '@/components/ui/button';
 import { Video, ArrowLeft, Play, Clock } from 'lucide-react';
+import Logo from '@/components/Logo';
 import axios from 'axios';
 import { toast } from 'sonner';
 
@@ -63,10 +64,7 @@ const Watch = () => {
             <Button data-testid="back-btn" onClick={() => navigate('/browse')} variant="ghost" className="text-white hover:text-cyan-400">
               <ArrowLeft className="w-5 h-5" />
             </Button>
-            <div className="flex items-center space-x-2">
-              <Video className="w-8 h-8 text-cyan-400" />
-              <h1 className="text-2xl font-bold">StreamHub</h1>
-            </div>
+            <Logo size="md" />
           </div>
         </div>
       </nav>
