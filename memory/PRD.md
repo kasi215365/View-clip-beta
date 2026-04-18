@@ -26,7 +26,16 @@ A hybrid VOD + Live Streaming platform (Hulu/ESPN meets Twitch/Bigo-Live) brande
 
 ## Implemented (CHANGELOG)
 
-### 2026-02 — Major feature drop & rebrand
+### 2026-02 (phase 2) — Productivity & engagement suite
+- **Referral leaderboard** — `referral_code` auto-generated on signup; `referred_by` attribution; 10% commission credited to referrer on referred user's first paid subscription; public `/api/referrals/leaderboard` endpoint; `/leaderboard` page with medal ranking
+- **Follow system** — `/api/streamers/{id}/follow`, `/unfollow`, `/follow-status`, `/api/users/me/follows`; Follow button on StreamView; follower count shown
+- **Notifications** — `/api/notifications` CRUD; bell icon in nav with polling every 30s; `/notifications` page; auto-created on new_follower, stream_live, gift_received, referral reward
+- **Unified search** — `/api/search?q=` (content, streams, streamers); debounced search bar on Browse page
+- **Trending** — `/api/trending` (top 12 VOD + top 12 live by views); horizontal strip on Browse
+- **Streamer analytics** — `/api/streamers/me/analytics` (by_source, 30d time-series, top 10 gifters, gift-tier breakdown, streams summary, followers); Analytics section on StreamerDashboard with bar chart
+- **Secure heartbeat** — `/api/streams/{id}/heartbeat` replaces client-side `setTimeout`; server accumulates watch-minutes in `watch_sessions` collection; auto-qualifies view at 30-min threshold exactly once per (stream_id, user_id). Anti-fraud: can't be gamed by frontend tampering.
+
+### 2026-02 (phase 1) — Feature drop & rebrand
 - **Rebranded** StreamHub → **View/Clip** (logo with animated `/` slash, new dark theme `#05070F`)
 - **Stripe Checkout** integration via `emergentintegrations`:
   - `/api/payments/checkout/subscribe` (viewer $7, streamer $50)
