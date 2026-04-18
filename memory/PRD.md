@@ -26,6 +26,16 @@ A hybrid VOD + Live Streaming platform (Hulu/ESPN meets Twitch/Bigo-Live) brande
 
 ## Implemented (CHANGELOG)
 
+### 2026-02 (phase 4) — Production integrations with graceful fallback
+- **Real Stripe Connect Express** (`stripe_service.create_connect_account`, `create_onboarding_link`, `retrieve_account`, `transfer_to_connect`) — activates automatically when `STRIPE_API_KEY` is a real test/live key. Falls back to mock onboarding when placeholder `sk_test_emergent` is set.
+- **Real recurring Stripe Subscriptions** (`stripe_service.ensure_subscription_price` auto-creates Product/Price, `create_subscription_checkout` uses `mode='subscription'`, `cancel_subscription` supports `cancel_at_period_end`). Webhook processes `customer.subscription.updated/deleted`, `invoice.paid`, `account.updated`. Falls back to one-time emergentintegrations Checkout (30-day mock) when real key missing.
+- **Real Stripe Transfer.create payouts** — `admin_trigger_payouts` uses `real_mode` flag; real transfers when configured, skips streamers without active Connect; mock-transfer IDs otherwise. Audit log records mode.
+- **Google Cloud Live Stream API** — `live_stream_service.provision_stream` creates RTMP Input + HLS transcoding Channel + starts it; `stop_stream` tears down; `active_channels_cost` returns live cost visibility. Gated on `GOOGLE_APPLICATION_CREDENTIALS` + `GOOGLE_CLOUD_PROJECT` + `LIVESTREAM_GCS_BUCKET`. Returns ingest_url + playback_url on stream create.
+- **HlsPlayer React component** (`/app/frontend/src/components/HlsPlayer.jsx`) — hls.js with native Safari fallback and MP4 passthrough. StreamView uses it.
+- **RTMP ingest panel** on StreamerDashboard — shows ingest URL + stream key for live streams.
+- **Cancel subscription** button on Profile — appears only for real recurring Stripe subscriptions.
+- **Key-rotation worker** — `/api/admin/system/rotate-keys` now genuinely generates a new Fernet key, iterates `banking_info`, decrypts with old cipher, re-encrypts with new, swaps the active cipher in-process, logs audit + system event.
+
 ### 2026-02 (phase 3) — Enterprise architecture
 - **Triple-layer database** — `DBRouter` transparently maps collections to 3 logical DBs (`viewclip_identity`, `viewclip_streaming`, `viewclip_vault`). Each layer is swappable to its own physical cluster via env vars. One-shot migration on startup moved 221 documents from the legacy DB.
 - **Vault field-level encryption** — Fernet (AES-128-CBC + HMAC-SHA256) for banking account/routing numbers. `/api/vault/banking` returns only last-4 masked values. Per-write audit log.
