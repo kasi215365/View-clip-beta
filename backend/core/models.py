@@ -73,6 +73,7 @@ class StreamExportRecord(BaseModel):
     platform: str
     target_url: str
     mock: bool = True
+    uploaded: bool = False
     note: Optional[str] = None
     exported_at: str
 

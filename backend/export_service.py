@@ -281,16 +281,99 @@ async def ensure_valid_access_token(user_id: str, provider: str) -> Optional[str
 
 
 # -----------------------------------------------------------------------------
-# PUBLISH — metadata-only by default (resumable upload path is available upstream
-# for future iteration; we keep this focused and small).
+# PUBLISH — metadata-only by default. Resumable file upload to YouTube when a
+# video file URL is provided (auto-picked from the saved stream's playback_url
+# or passed from the frontend export modal).
 # -----------------------------------------------------------------------------
-async def publish_to_youtube(user_id: str, title: str, description: str,
-                             tags: list, privacy: str = "unlisted") -> Dict[str, Any]:
+YOUTUBE_RESUMABLE_UPLOAD_URL = (
+    "https://www.googleapis.com/upload/youtube/v3/videos"
+    "?uploadType=resumable&part=snippet,status"
+)
+# Cap to keep backend memory use sane. Beyond this we fall back to metadata-only
+# and surface `note: video_too_large` so the streamer can upload via YouTube Studio.
+MAX_UPLOAD_MB = int(os.environ.get("YT_UPLOAD_MAX_MB", "500"))
+
+
+def _is_hls_manifest(url: str) -> bool:
+    return bool(url) and url.lower().split("?")[0].endswith((".m3u8", ".mpd"))
+
+
+async def _fetch_video_bytes(url: str) -> tuple[Optional[bytes], Optional[str]]:
+    """Download the remote video. Returns (bytes, error). Caps at MAX_UPLOAD_MB."""
+    try:
+        async with httpx.AsyncClient(timeout=300, follow_redirects=True) as client:
+            # HEAD first to check size before committing memory
+            try:
+                h = await client.head(url)
+                length = int(h.headers.get("content-length", "0") or 0)
+                if length and length > MAX_UPLOAD_MB * 1024 * 1024:
+                    return None, f"video_too_large_{length // (1024 * 1024)}mb"
+            except Exception:
+                pass  # fall through to GET
+
+            r = await client.get(url)
+            if r.status_code != 200:
+                return None, f"fetch_failed_{r.status_code}"
+            data = r.content
+            if len(data) > MAX_UPLOAD_MB * 1024 * 1024:
+                return None, f"video_too_large_{len(data) // (1024 * 1024)}mb"
+            return data, None
+    except httpx.HTTPError as e:
+        return None, f"fetch_error_{type(e).__name__}"
+
+
+async def _resumable_upload_youtube(
+    access_token: str,
+    metadata: Dict[str, Any],
+    video_bytes: bytes,
+    content_type: str = "video/mp4",
+) -> Dict[str, Any]:
+    """Two-phase resumable upload: initiate (metadata) → PUT bytes."""
+    headers_init = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json; charset=UTF-8",
+        "X-Upload-Content-Length": str(len(video_bytes)),
+        "X-Upload-Content-Type": content_type,
+    }
+    async with httpx.AsyncClient(timeout=600) as client:
+        r = await client.post(YOUTUBE_RESUMABLE_UPLOAD_URL, headers=headers_init, json=metadata)
+        if r.status_code != 200:
+            logger.error("YouTube resumable init failed: %s %s", r.status_code, r.text[:300])
+            return {"error": f"init_failed_{r.status_code}"}
+        upload_uri = r.headers.get("Location") or r.headers.get("location")
+        if not upload_uri:
+            return {"error": "no_upload_uri"}
+        r = await client.put(
+            upload_uri,
+            headers={"Content-Type": content_type},
+            content=video_bytes,
+        )
+        if r.status_code not in (200, 201):
+            logger.error("YouTube upload PUT failed: %s %s", r.status_code, r.text[:300])
+            return {"error": f"upload_failed_{r.status_code}"}
+        return {"video": r.json()}
+
+
+async def publish_to_youtube(
+    user_id: str,
+    title: str,
+    description: str,
+    tags: list,
+    privacy: str = "unlisted",
+    video_url: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Publishes to the streamer's linked YouTube channel.
+
+    When `video_url` points to a real video file (MP4/MOV/WebM), performs a
+    resumable upload. HLS manifests (.m3u8/.mpd) fall back to metadata-only
+    since YouTube won't ingest a playlist.
+    """
     token = await ensure_valid_access_token(user_id, "youtube")
     if not token:
         return {"mock": True, "reason": "not_connected",
                 "url": f"https://studio.youtube.com/channel/UC_mock?upload={title.replace(' ', '+')}"}
-    body = {
+
+    metadata = {
         "snippet": {
             "title": title[:100],
             "description": description[:5000],
@@ -299,18 +382,41 @@ async def publish_to_youtube(user_id: str, title: str, description: str,
         },
         "status": {"privacyStatus": privacy, "embeddable": True, "license": "youtube"},
     }
+
+    # Decide upload path
+    should_upload = bool(video_url) and not _is_hls_manifest(video_url)
+    if should_upload:
+        video_bytes, fetch_err = await _fetch_video_bytes(video_url)
+        if fetch_err:
+            # Still create the video with metadata; surface the fetch failure reason
+            logger.warning("YouTube upload skipped (%s) — falling back to metadata-only", fetch_err)
+            should_upload = False
+        else:
+            result = await _resumable_upload_youtube(token, metadata, video_bytes)
+            if "error" in result:
+                return {"mock": True, "reason": result["error"],
+                        "url": "https://studio.youtube.com/"}
+            video_id = (result.get("video") or {}).get("id")
+            return {"mock": False, "uploaded": True, "video_id": video_id,
+                    "url": f"https://www.youtube.com/watch?v={video_id}"}
+
+    # Metadata-only path (no file, HLS manifest, or fetch failed)
     async with httpx.AsyncClient(timeout=30) as client:
         r = await client.post(
             f"{YOUTUBE_VIDEOS_URL}?part=snippet,status",
             headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-            json=body,
+            json=metadata,
         )
     if r.status_code not in (200, 201):
-        logger.error("YouTube publish failed: %s %s", r.status_code, r.text)
+        logger.error("YouTube metadata publish failed: %s %s", r.status_code, r.text[:300])
         return {"mock": True, "reason": f"publish_failed_{r.status_code}",
                 "url": "https://studio.youtube.com/"}
     video_id = r.json().get("id")
-    return {"mock": False, "video_id": video_id,
+    note = "metadata_only_hls_manifest" if _is_hls_manifest(video_url or "") else (
+        "metadata_only_no_file" if not video_url else None
+    )
+    return {"mock": False, "uploaded": False, "note": note,
+            "video_id": video_id,
             "url": f"https://www.youtube.com/watch?v={video_id}"}
 
 

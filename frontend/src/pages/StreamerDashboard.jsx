@@ -23,6 +23,7 @@ const StreamerDashboard = () => {
   const [loading, setLoading] = useState(true);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [exportStream, setExportStream] = useState(null); // stream object for export modal
+  const [exportVideoUrl, setExportVideoUrl] = useState(''); // MP4 URL used by YouTube upload path
   const [oauth, setOauth] = useState({ connections: [], available_providers: [] });
   const [newStream, setNewStream] = useState({ title: '', description: '', video_url: '', thumbnail_url: '' });
 
@@ -97,11 +98,21 @@ const StreamerDashboard = () => {
 
   const handleExport = async (platform) => {
     try {
-      const r = await axios.post(`${API}/streams/${exportStream.id}/export`, { platform });
+      const payload = { platform };
+      if (platform === 'youtube' && exportVideoUrl.trim()) {
+        payload.target_url = exportVideoUrl.trim();
+      }
+      const r = await axios.post(`${API}/streams/${exportStream.id}/export`, payload);
       const exp = r.data.export || {};
-      const suffix = exp.mock ? ' (mock — connect account to publish for real)' : '';
-      toast.success(`Exported to ${platform.toUpperCase()}: ${exp.target_url}${suffix}`);
+      let status;
+      if (exp.uploaded) status = ' — video uploaded 🎬';
+      else if (exp.mock) status = ' (mock — connect account to publish for real)';
+      else if (exp.note === 'metadata_only_hls_manifest') status = ' — metadata only (HLS manifests can\'t be uploaded; paste an MP4 URL to upload the actual video)';
+      else if (exp.note === 'metadata_only_no_file') status = ' — metadata only (no video file available)';
+      else status = '';
+      toast.success(`Exported to ${platform.toUpperCase()}: ${exp.target_url}${status}`);
       setExportStream(null);
+      setExportVideoUrl('');
       fetchData();
     } catch (e) {
       toast.error(e.response?.data?.detail || 'Export failed');
@@ -456,10 +467,39 @@ const StreamerDashboard = () => {
       </div>
 
       {/* Export Modal */}
-      <Dialog open={!!exportStream} onOpenChange={(o) => !o && setExportStream(null)}>
-        <DialogContent className="bg-[#0A0E27] border-white/10 text-white">
+      <Dialog open={!!exportStream} onOpenChange={(o) => {
+        if (!o) { setExportStream(null); setExportVideoUrl(''); }
+        else if (exportStream) {
+          // Pre-fill with the stream's recording / playback URL so YouTube upload "just works"
+          const auto = exportStream.recording_url || exportStream.playback_url || '';
+          setExportVideoUrl(auto);
+        }
+      }}>
+        <DialogContent className="bg-[#0A0E27] border-white/10 text-white max-w-lg">
           <DialogHeader><DialogTitle className="text-2xl">Export Stream</DialogTitle></DialogHeader>
           <p className="text-gray-400 mb-4">Distribute "{exportStream?.title}" to other platforms.</p>
+
+          {/* YouTube-specific: video file URL (auto-filled, editable) */}
+          <div className="bg-black/30 border border-white/5 rounded-lg p-3 mb-4">
+            <Label className="text-xs uppercase tracking-wider text-red-400 flex items-center gap-2 mb-2">
+              <Youtube className="w-4 h-4" /> YouTube video file (optional)
+            </Label>
+            <Input
+              data-testid="export-video-url-input"
+              value={exportVideoUrl}
+              onChange={(e) => setExportVideoUrl(e.target.value)}
+              placeholder="https://.../recording.mp4"
+              className="bg-white/5 border-white/10 text-white text-sm"
+            />
+            <p className="text-[11px] text-gray-500 mt-1">
+              {exportVideoUrl && /\.m3u8(\?|$)/i.test(exportVideoUrl)
+                ? 'HLS manifest detected — YouTube will receive metadata only. Paste an MP4/MOV/WebM URL to upload the actual video.'
+                : exportVideoUrl
+                  ? 'Video will be uploaded directly to YouTube (capped at 500MB).'
+                  : 'Leave empty to publish metadata only.'}
+            </p>
+          </div>
+
           <div className="grid grid-cols-2 gap-3">
             <Button data-testid="export-youtube-btn" onClick={() => handleExport('youtube')} className="bg-red-600 hover:bg-red-700 py-6"><Youtube className="w-5 h-5 mr-2" />YouTube</Button>
             <Button data-testid="export-twitch-btn" onClick={() => handleExport('twitch')} className="bg-purple-600 hover:bg-purple-700 py-6"><Twitch className="w-5 h-5 mr-2" />Twitch</Button>

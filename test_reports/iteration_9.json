@@ -1,0 +1,135 @@
+{
+  "summary": "Iteration 9 FULL REGRESSION testing of View/Clip v1.4.0 after Phase 2b router refactor (server.py split into 12 routers) and Phase 3 YouTube resumable upload integration. All 43 iteration 8 tests passed. All 41 new iteration 9 tests passed. Frontend export modal verified with HLS manifest detection warning. Router refactor is pure structural — no behavior changed.",
+
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+
+  "passed_tests": {
+    "iteration_8_regression": [
+      "All 43 tests from test_viewclip_iteration8.py passed (100%)",
+      "Public health probes: /api/health, /api/ready",
+      "X-Request-ID middleware: present and echoed",
+      "Notifications: list, mark read, mark all read",
+      "Social: referrals, leaderboard, validate code, search, trending, follow/unfollow",
+      "OAuth: youtube/twitch start (mock), connections, disconnect, callback error handling",
+      "Stream export: youtube/twitch/x/custom platforms (mock mode)",
+      "Admin 2FA: status, setup/enable/disable flow",
+      "Payments: gift tiers, subscription checkout, connect onboard",
+      "Content/Streams: list endpoints",
+      "Admin system: health v1.4.0, audit log, key rotation"
+    ],
+    "phase_3_youtube_upload": [
+      "POST /api/streams/{id}/export with platform=youtube and target_url returns mock=true, note=not_connected, uploaded=false",
+      "HLS manifest detection: target_url ending .m3u8 returns note=not_connected (mock mode), uploaded=false",
+      "No target_url: auto-pulls from stream.recording_url/playback_url, returns mock=true, note=not_connected",
+      "StreamExportRecord model: GET /api/streams returns 200 with exports containing `uploaded` bool field"
+    ],
+    "phase_2b_router_refactor": [
+      "routers/health.py: /api/health (200, version 1.4.0), /api/ready (200, status ready)",
+      "routers/auth.py: /api/auth/register, /api/auth/me",
+      "routers/admin.py: /api/admin/auth/login, /api/admin/stats, /api/admin/users, /api/admin/settings, /api/admin/system/health, /api/admin/audit, /api/admin/streaming/providers",
+      "routers/content.py: /api/content, /api/promos",
+      "routers/streaming.py: /api/streams, /api/comments/{stream_id}",
+      "routers/gifts.py: /api/gifts/tiers (8 tiers)",
+      "routers/payments.py: /api/payments/checkout/subscribe, /api/subscriptions/status",
+      "routers/earnings.py: /api/earnings, /api/earnings/total, /api/streamers/connect/onboard, /api/streamers/me/analytics",
+      "routers/vault.py: /api/vault/banking",
+      "routers/notifications.py: /api/notifications",
+      "routers/social.py: /api/referrals/my, /api/referrals/leaderboard, /api/search, /api/trending",
+      "routers/oauth.py: /api/oauth/youtube/start, /api/oauth/twitch/start, /api/oauth/connections"
+    ],
+    "firewall_middleware": [
+      "X-Request-ID header present on all responses",
+      "X-Request-ID echoed when client supplies it",
+      "Rate limiting middleware active (no 429 on single request)"
+    ],
+    "frontend_export_modal": [
+      "Export modal opens with data-testid='export-video-url-input' field",
+      "Video URL input pre-filled from stream.recording_url || stream.playback_url",
+      "HLS manifest detection shows warning: 'HLS manifest detected — YouTube will receive metadata only'",
+      "All 4 export buttons present: YouTube, Twitch, X Post, Custom URL",
+      "Export toast shows mock status: '(mock — connect account to publish for real)'"
+    ]
+  },
+
+  "test_report_links": [
+    "/app/backend/tests/test_viewclip_iteration8.py",
+    "/app/backend/tests/test_viewclip_iteration9.py",
+    "/app/test_reports/pytest/pytest_iteration9.xml"
+  ],
+
+  "action_items": [],
+
+  "critical_code_review_comments": [
+    "Router refactor is clean — server.py reduced from 1,868 to 162 lines",
+    "All 12 routers properly expose router: APIRouter(prefix='/api')",
+    "core/ package correctly shares db, crypto, constants, models, auth, helpers, firewall, middleware",
+    "export_service.py correctly implements _is_hls_manifest() detection for .m3u8/.mpd URLs",
+    "StreamExportRecord model includes new `uploaded` bool field",
+    "YouTube resumable upload path correctly wired: body.target_url → stream.recording_url → stream.playback_url precedence",
+    "Mock mode correctly returns mock=true, note='not_connected', uploaded=false when OAuth not configured"
+  ],
+
+  "updated_files": [
+    "/app/backend/tests/test_viewclip_iteration9.py"
+  ],
+
+  "success_rate": {
+    "backend": "100% (84 tests: 43 iteration 8 + 41 iteration 9)",
+    "frontend": "100% (export modal, HLS warning, all buttons verified)"
+  },
+
+  "test_credentials": {
+    "admin": "admin@viewclip.com / Admin123!",
+    "note": "Admin 2FA remains DISABLED as requested"
+  },
+
+  "seed_data_creation": "Multiple TEST_ prefixed streams created for export testing",
+
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+
+  "context_for_next_testing_agent": "Iteration 9 completes Phase 2b router refactor (12 routers) and Phase 3 YouTube resumable upload integration. server.py is now a thin 162-line app factory. All endpoints moved to routers/. YouTube upload wired into /streams/{id}/export with video_url parameter. HLS manifest detection prevents upload of .m3u8 playlists. StreamExportRecord model includes `uploaded` bool field. Version is 1.4.0. Admin 2FA DISABLED. MOCKED: Stripe Connect, Stripe subs, GCP Live Stream, YouTube OAuth, Twitch OAuth, YouTube upload.",
+
+  "mocked_apis": {
+    "Stripe Connect Express": "POST /api/streamers/connect/onboard returns mock=true (sk_test_emergent)",
+    "Stripe Recurring Subscriptions": "POST /api/payments/checkout/subscribe uses emergentintegrations fallback",
+    "Google Cloud Live Stream": "POST /api/streams returns mock ingest/playback URLs",
+    "YouTube OAuth": "POST /api/oauth/youtube/start returns mock=true (YOUTUBE_CLIENT_ID not set)",
+    "Twitch OAuth": "POST /api/oauth/twitch/start returns mock=true (TWITCH_CLIENT_ID not set)",
+    "YouTube Upload": "POST /api/streams/{id}/export returns mock=true, uploaded=false, note=not_connected"
+  },
+
+  "features_verified": {
+    "router_refactor": {
+      "routers_count": 12,
+      "routers": ["health", "auth", "content", "streaming", "gifts", "payments", "earnings", "vault", "admin", "notifications", "social", "oauth"],
+      "server_py_lines": 162,
+      "core_modules": ["db", "crypto", "constants", "models", "auth", "helpers", "firewall", "middleware"]
+    },
+    "youtube_upload": {
+      "endpoint": "POST /api/streams/{id}/export",
+      "video_url_precedence": "body.target_url → stream.recording_url → stream.playback_url",
+      "hls_detection": "_is_hls_manifest() detects .m3u8/.mpd URLs",
+      "mock_response": {"mock": true, "uploaded": false, "note": "not_connected"}
+    },
+    "stream_export_record": {
+      "model": "StreamExportRecord",
+      "fields": ["platform", "target_url", "mock", "uploaded", "note", "exported_at"]
+    },
+    "frontend_export_modal": {
+      "video_url_input": "data-testid='export-video-url-input'",
+      "auto_fill": "stream.recording_url || stream.playback_url",
+      "hls_warning": "HLS manifest detected — YouTube will receive metadata only",
+      "buttons": ["export-youtube-btn", "export-twitch-btn", "export-x-btn", "export-custom-btn"]
+    }
+  }
+}
