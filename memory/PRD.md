@@ -26,6 +26,34 @@ A hybrid VOD + Live Streaming platform (Hulu/ESPN meets Twitch/Bigo-Live) brande
 
 ## Implemented (CHANGELOG)
 
+### 2026-02 (phase 8) — Full router refactor (Phase 2b) + YouTube resumable upload (v1.4.0)
+
+**Phase 2b — server.py split into 12 dedicated routers:**
+- `server.py`: **1,868 → 162 lines (−91%)**. Pure app-factory now (env, middleware, routers, startup).
+- **Shared `core/` package:**
+  - `core/db.py` — DBRouter + 3-layer mapping
+  - `core/crypto.py` — Fernet + rotate/replace_cipher
+  - `core/constants.py` — economic constants + gift tiers
+  - `core/models.py` — Pydantic models (incl. `StreamExportRecord` with `uploaded` flag)
+  - `core/auth.py` — JWT + get_current_user + require_admin
+  - `core/helpers.py` — notifications, anomaly detection, recovery codes, settings
+  - `core/firewall.py` — rate-limit + admin IP allowlist state
+  - `core/middleware.py` — FirewallMiddleware + RequestIDMiddleware
+- **Routers under `backend/routers/` (11 files, ~1,950 LOC):**
+  - `health.py` (public), `auth.py`, `content.py`, `streaming.py`, `gifts.py`,
+  - `payments.py` (checkout + webhook + Connect + subscriptions),
+  - `earnings.py`, `vault.py`, `admin.py` (stats + payouts + system), `notifications.py`,
+  - `social.py` (follows + referrals + search + trending), `oauth.py`
+- Zero behavior change — 84/84 regression tests green (43 iteration-8 + 41 iteration-9).
+
+**Phase 3 — YouTube resumable file upload (metadata + bytes):**
+- `export_service.publish_to_youtube` now accepts `video_url`; when it points to a real file, runs the full two-phase resumable upload (initiate → PUT bytes) via `_resumable_upload_youtube` + `_fetch_video_bytes`.
+- `_is_hls_manifest` auto-detects `.m3u8` / `.mpd` playlists → gracefully falls back to metadata-only (YouTube can't ingest playlists).
+- 500 MB safety cap via `YT_UPLOAD_MAX_MB` env var.
+- `/api/streams/{id}/export` uses URL precedence: body.target_url → stream.recording_url → stream.playback_url.
+- `StreamExportRecord.uploaded` tells the frontend whether bytes were actually uploaded.
+- **Streamer Dashboard export modal** now has `export-video-url-input`, pre-filled from the stream, with HLS warning text and context-aware success toast (`video uploaded 🎬` / `mock` / `metadata only`).
+
 ### 2026-02 (phase 7) — Migration-proofing + partial router refactor + YouTube/Twitch OAuth (v1.4.0)
 
 **Migration-proofing (never lose the codebase):**
