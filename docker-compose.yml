@@ -1,0 +1,67 @@
+# View/Clip — self-host stack
+# Boot the entire platform with `docker compose up -d` on any Docker host.
+#
+# Layout:
+#   - mongo:      MongoDB 7 with a named volume (viewclip-mongo-data)
+#   - backend:    FastAPI on :8001, reads /app/backend/.env
+#   - frontend:   built React app served by nginx on :3000
+#
+# To use Atlas instead of local Mongo: remove the `mongo` service and
+# set MONGO_URL in backend/.env to your Atlas connection string.
+
+version: "3.9"
+
+services:
+  mongo:
+    image: mongo:7
+    container_name: viewclip-mongo
+    restart: unless-stopped
+    volumes:
+      - viewclip-mongo-data:/data/db
+    networks: [viewclip]
+    # Not exposed on host by default — only backend talks to it.
+    # Uncomment to debug from the host:
+    # ports: ["27017:27017"]
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: viewclip-backend
+    restart: unless-stopped
+    depends_on: [mongo]
+    env_file:
+      - ./backend/.env
+    environment:
+      # Override MONGO_URL so the containerized backend talks to the mongo service,
+      # regardless of what's in .env (local-dev convenience).
+      MONGO_URL: mongodb://mongo:27017
+    ports:
+      - "8001:8001"
+    networks: [viewclip]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        REACT_APP_BACKEND_URL: ${REACT_APP_BACKEND_URL:-http://localhost:8001}
+    container_name: viewclip-frontend
+    restart: unless-stopped
+    depends_on: [backend]
+    ports:
+      - "3000:80"
+    networks: [viewclip]
+
+volumes:
+  viewclip-mongo-data:
+
+networks:
+  viewclip:
+    driver: bridge
