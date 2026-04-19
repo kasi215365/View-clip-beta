@@ -37,428 +37,76 @@ import live_stream_service
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
-# =============================================================================
-# TRIPLE-LAYER ENTERPRISE DATABASE ARCHITECTURE
-# Three logical databases on the shared Mongo cluster:
-#   1. IDENTITY_DB  — account credentials, subscriptions, global settings
-#   2. STREAMING_DB — live stream data, content, chat, follows, notifications
-#   3. VAULT_DB     — payments, gifts, earnings, payouts, banking info (encrypted)
-# Each DB can be migrated to its own physical cluster by changing env vars only.
-# =============================================================================
-mongo_url = os.environ['MONGO_URL']
-client = AsyncIOMotorClient(mongo_url)
-
-_LEGACY_DB_NAME = os.environ['DB_NAME']
-_IDENTITY_DB_NAME = os.environ.get('DB_NAME_IDENTITY', f"{_LEGACY_DB_NAME}_identity")
-_STREAMING_DB_NAME = os.environ.get('DB_NAME_STREAMING', f"{_LEGACY_DB_NAME}_streaming")
-_VAULT_DB_NAME = os.environ.get('DB_NAME_VAULT', f"{_LEGACY_DB_NAME}_vault")
-
-db_identity = client[_IDENTITY_DB_NAME]
-db_streaming = client[_STREAMING_DB_NAME]
-db_vault = client[_VAULT_DB_NAME]
-_legacy_db = client[_LEGACY_DB_NAME]
-
-# Collection → layer routing (enterprise database-router pattern)
-_COLLECTION_LAYER = {
-    # Identity layer — account data
-    'users': 'identity', 'subscriptions': 'identity', 'settings': 'identity',
-    'sessions': 'identity',
-    # Streaming layer — real-time media + engagement
-    'content': 'streaming', 'live_streams': 'streaming', 'comments': 'streaming',
-    'follows': 'streaming', 'notifications': 'streaming', 'watch_sessions': 'streaming',
-    # Vault layer — financial / sensitive (field-level encryption applied)
-    'payment_transactions': 'vault', 'gifts': 'vault', 'earnings': 'vault',
-    'payouts': 'vault', 'banking_info': 'vault', 'referral_events': 'vault',
-    'audit_log': 'vault', 'system_events': 'vault',
-}
-_LAYER_DB = {'identity': db_identity, 'streaming': db_streaming, 'vault': db_vault}
-
-
-class DBRouter:
-    """Enterprise 3-layer database router. Transparently routes
-    `db.users`, `db.gifts`, etc. to the appropriate logical database."""
-    def __getattr__(self, name: str):
-        layer = _COLLECTION_LAYER.get(name, 'identity')
-        return _LAYER_DB[layer][name]
-
-
-db = DBRouter()
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 # =============================================================================
-# VAULT FIELD-LEVEL ENCRYPTION (AES-128 via Fernet)
+# Shared core imports — DB, crypto, models, auth, helpers moved to backend/core.
+# Aliased to keep existing call sites in this file stable (prefixed privates).
 # =============================================================================
-_VAULT_KEY = os.environ.get('VAULT_ENCRYPTION_KEY')
-if not _VAULT_KEY:
-    # Auto-generate on first boot. In production this MUST come from env.
-    _VAULT_KEY = Fernet.generate_key().decode()
-    logging.warning("VAULT_ENCRYPTION_KEY missing — generated ephemeral key (dev only)")
-_vault_cipher = Fernet(_VAULT_KEY.encode() if isinstance(_VAULT_KEY, str) else _VAULT_KEY)
+from core.db import (  # noqa: E402
+    client,
+    db,
+    db_identity,
+    db_streaming,
+    db_vault,
+    _legacy_db,
+    _COLLECTION_LAYER,
+    _LAYER_DB,
+    _IDENTITY_DB_NAME,
+    _STREAMING_DB_NAME,
+    _VAULT_DB_NAME,
+    _LEGACY_DB_NAME,
+)
+from core import crypto as _crypto  # noqa: E402
+from core.crypto import vault_encrypt, vault_decrypt, mask_bank  # noqa: E402
+from core.constants import (  # noqa: E402
+    VIEWER_SUB_PRICE,
+    STREAMER_SUB_PRICE,
+    GIFT_TIERS,
+    GIFT_TIERS_BY_ID,
+    DEFAULT_SETTINGS,
+)
+from core.models import (  # noqa: E402
+    UserRegister, UserLogin, AdminLogin, User,
+    Content, ContentCreate,
+    LiveStream, LiveStreamCreate,
+    Comment, CommentCreate,
+    GiftSend, BankingInfoUpdate, Subscription,
+    CheckoutSubscribe, CheckoutGiftBundle, ExportStream,
+    AdminSettingsUpdate, PromoCreate,
+)
+from core.auth import (  # noqa: E402
+    JWT_SECRET, JWT_ALGORITHM, JWT_EXPIRATION_HOURS,
+    security, hash_password, verify_password, create_token,
+    get_current_user, require_admin,
+)
+from core.helpers import (  # noqa: E402
+    now_iso,
+    get_settings,
+    generate_referral_code as _generate_referral_code,
+    notify as _notify,
+    notify_all_admins as _notify_all_admins,
+    check_admin_anomalies as _check_admin_anomalies,
+    generate_recovery_codes as _generate_recovery_codes,
+    hash_recovery_code as _hash_recovery_code,
+    verify_recovery_code as _verify_recovery_code,
+)
 
-
-def vault_encrypt(plaintext: str) -> str:
-    if plaintext is None:
-        return None
-    return _vault_cipher.encrypt(plaintext.encode()).decode()
-
-
-def vault_decrypt(ciphertext: str) -> Optional[str]:
-    if not ciphertext:
-        return None
-    try:
-        return _vault_cipher.decrypt(ciphertext.encode()).decode()
-    except InvalidToken:
-        return None
-
-
-def mask_bank(plaintext: Optional[str]) -> str:
-    """Last-4 masking for display."""
-    if not plaintext:
-        return ""
-    tail = plaintext[-4:]
-    return f"•••• {tail}"
-
-# JWT Configuration
-JWT_SECRET = os.environ.get('JWT_SECRET', 'your-secret-key-change-in-production')
-JWT_ALGORITHM = 'HS256'
-JWT_EXPIRATION_HOURS = 24 * 30  # 30 days
+# Expose the module-level vault globals that admin_rotate_keys mutates directly.
+# Kept here for backwards compatibility — the active cipher actually lives in core.crypto.
+_VAULT_KEY = _crypto._VAULT_KEY
+_vault_cipher = _crypto._vault_cipher
 
 # Stripe
 STRIPE_API_KEY = os.environ.get('STRIPE_API_KEY', 'sk_test_emergent')
 
-security = HTTPBearer()
 app = FastAPI(title="View/Clip")
 api_router = APIRouter(prefix="/api")
 
-# =============================================================================
-# BUSINESS CONSTANTS (View/Clip economic model)
-# =============================================================================
-VIEWER_SUB_PRICE = 7.00
-STREAMER_SUB_PRICE = 50.00
-
-# Gift tiers: id, emoji, label, value_per_unit ($ streamer earns per unit used),
-# qty (units in bundle), price (USD user pays for bundle)
-GIFT_TIERS: List[Dict[str, Any]] = [
-    {"id": "t1", "emoji": "🪙", "name": "Coin",      "value_per_unit": 0.002, "qty": 500, "price": 10.00},
-    {"id": "t2", "emoji": "🥃", "name": "Shot",      "value_per_unit": 0.013, "qty": 500, "price": 20.00},
-    {"id": "t3", "emoji": "🥇", "name": "Gold",      "value_per_unit": 0.102, "qty": 500, "price": 35.00},
-    {"id": "t4", "emoji": "🏆", "name": "Trophy",    "value_per_unit": 0.140, "qty": 500, "price": 50.00},
-    {"id": "t5", "emoji": "🏎",  "name": "Racer",     "value_per_unit": 0.200, "qty": 500, "price": 72.00},
-    {"id": "t6", "emoji": "🏚",  "name": "Mansion",   "value_per_unit": 1.050, "qty": 500, "price": 100.00},
-    {"id": "t7", "emoji": "💎", "name": "Diamond",   "value_per_unit": 2.003, "qty": 500, "price": 200.00},
-    {"id": "t8", "emoji": "🌍", "name": "World",     "value_per_unit": 3.000, "qty": 500, "price": 300.00},
-]
-GIFT_TIERS_BY_ID = {t["id"]: t for t in GIFT_TIERS}
-
-DEFAULT_SETTINGS = {
-    "viewer_sub_price": VIEWER_SUB_PRICE,
-    "streamer_sub_price": STREAMER_SUB_PRICE,
-    "earnings_per_view": 0.005,             # $0.005 per view (30-min threshold)
-    "view_threshold_minutes": 30,
-    "earnings_per_100k_views": 5.00,         # display helper ($0.005 * 100000 = $500 actually)
-    "gift_base_rate": 0.002,
-    "budget_alert_percent": 80,              # admin-configurable bandwidth cap %
-    "maintenance_mode": False,
-}
-
-# =============================================================================
-# MODELS
-# =============================================================================
-class UserRegister(BaseModel):
-    email: EmailStr
-    password: str
-    name: str
-    role: str = "viewer"
-    referral_code: Optional[str] = None
-
-class UserLogin(BaseModel):
-    email: EmailStr
-    password: str
-
-class AdminLogin(BaseModel):
-    email: EmailStr
-    password: str
-    totp_code: Optional[str] = None
-
-class User(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-    id: str
-    email: str
-    name: str
-    role: str
-    subscription_status: str = "inactive"
-    subscription_expires: Optional[str] = None
-    created_at: str
-    gift_wallet: Dict[str, int] = Field(default_factory=dict)  # tier_id -> units
-    connect_account_status: str = "not_onboarded"  # not_onboarded, pending, active
-    referral_code: Optional[str] = None
-    referred_by: Optional[str] = None
-    referral_earnings: float = 0.0
-
-class Content(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-    id: str
-    title: str
-    description: str
-    type: str
-    video_url: str
-    thumbnail_url: str
-    duration: int
-    views: int = 0
-    is_promo: bool = False
-    created_at: str
-
-class ContentCreate(BaseModel):
-    title: str
-    description: str
-    type: str
-    video_url: str
-    thumbnail_url: str
-    duration: int
-    is_promo: bool = False
-
-class LiveStream(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-    id: str
-    streamer_id: str
-    streamer_name: str
-    title: str
-    description: str
-    video_url: str
-    thumbnail_url: str
-    is_live: bool
-    viewers_count: int = 0
-    start_time: str
-    end_time: Optional[str] = None
-    views: int = 0
-    qualified_views: int = 0   # views that hit 30-min threshold
-    saved: bool = False
-    exports: List[Dict[str, str]] = Field(default_factory=list)
-    playback_url: Optional[str] = None
-    ingest_url: Optional[str] = None
-    stream_key: Optional[str] = None
-    live_mode: Optional[str] = None
-
-class LiveStreamCreate(BaseModel):
-    title: str
-    description: str
-    video_url: str
-    thumbnail_url: str
-
-class Comment(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-    id: str
-    user_id: str
-    user_name: str
-    stream_id: Optional[str] = None
-    content_id: Optional[str] = None
-    text: str
-    created_at: str
-
-class CommentCreate(BaseModel):
-    stream_id: Optional[str] = None
-    content_id: Optional[str] = None
-    text: str
-
-class GiftSend(BaseModel):
-    stream_id: Optional[str] = None
-    recipient_id: Optional[str] = None  # direct viewer-to-viewer gifting
-    tier_id: str
-    quantity: int = 1
-
-class BankingInfoUpdate(BaseModel):
-    account_holder: str
-    account_number: str
-    routing_number: str
-    bank_name: str
-    country: str = "US"
-
-class Subscription(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-    id: str
-    user_id: str
-    type: str
-    amount: float
-    status: str
-    created_at: str
-    expires_at: str
-
-class CheckoutSubscribe(BaseModel):
-    type: str  # viewer | streamer
-    origin_url: str
-
-class CheckoutGiftBundle(BaseModel):
-    tier_id: str
-    origin_url: str
-
-class ExportStream(BaseModel):
-    platform: str  # youtube | twitch | x | custom
-    target_url: Optional[str] = None
-
-class AdminSettingsUpdate(BaseModel):
-    viewer_sub_price: Optional[float] = None
-    streamer_sub_price: Optional[float] = None
-    earnings_per_view: Optional[float] = None
-    view_threshold_minutes: Optional[int] = None
-    gift_base_rate: Optional[float] = None
-    budget_alert_percent: Optional[int] = None
-    maintenance_mode: Optional[bool] = None
-
-class PromoCreate(BaseModel):
-    title: str
-    description: str
-    thumbnail_url: str
-    video_url: str
-
-# =============================================================================
-# HELPERS
-# =============================================================================
-def hash_password(password: str) -> str:
-    return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
-
-def verify_password(password: str, hashed: str) -> bool:
-    return bcrypt.checkpw(password.encode('utf-8'), hashed.encode('utf-8'))
-
-def create_token(user_id: str, email: str, role: str) -> str:
-    payload = {
-        'user_id': user_id,
-        'email': email,
-        'role': role,
-        'exp': datetime.now(timezone.utc) + timedelta(hours=JWT_EXPIRATION_HOURS)
-    }
-    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
-
-async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
-    try:
-        token = credentials.credentials
-        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
-        user_id = payload.get('user_id')
-        if not user_id:
-            raise HTTPException(status_code=401, detail="Invalid token")
-        user = await db.users.find_one({"id": user_id}, {"_id": 0, "password_hash": 0})
-        if not user:
-            raise HTTPException(status_code=401, detail="User not found")
-        user.setdefault("gift_wallet", {})
-        user.setdefault("connect_account_status", "not_onboarded")
-        return User(**user)
-    except jwt.ExpiredSignatureError:
-        raise HTTPException(status_code=401, detail="Token expired")
-    except jwt.InvalidTokenError:
-        raise HTTPException(status_code=401, detail="Invalid token")
-
-async def require_admin(current_user: User = Depends(get_current_user)):
-    if current_user.role != "admin":
-        raise HTTPException(status_code=403, detail="Admin access required")
-    return current_user
-
-async def get_settings() -> Dict[str, Any]:
-    doc = await db.settings.find_one({"id": "global"}, {"_id": 0})
-    if not doc:
-        doc = {"id": "global", **DEFAULT_SETTINGS, "updated_at": datetime.now(timezone.utc).isoformat()}
-        await db.settings.insert_one(doc.copy())
-        return doc
-    merged = {**DEFAULT_SETTINGS, **doc}
-    return merged
-
-def now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-def _generate_referral_code(name: str, user_id: str) -> str:
-    """Generate a short referral code based on name + uuid."""
-    prefix = ''.join([c for c in (name or '').upper() if c.isalnum()])[:4] or "VC"
-    suffix = user_id.replace("-", "")[:6].upper()
-    return f"{prefix}{suffix}"
-
-async def _notify(user_id: str, notification_type: str, title: str, body: str, data: Optional[Dict[str, Any]] = None):
-    """Insert a notification document for a single user."""
-    await db.notifications.insert_one({
-        "id": str(uuid.uuid4()),
-        "user_id": user_id,
-        "type": notification_type,
-        "title": title,
-        "body": body,
-        "data": data or {},
-        "read": False,
-        "created_at": now_iso(),
-    })
-
-
-async def _notify_all_admins(notification_type: str, title: str, body: str, data: Optional[Dict[str, Any]] = None):
-    """Fan-out a notification to every admin account — used for security anomalies."""
-    admins = await db.users.find({"role": "admin"}, {"_id": 0, "id": 1}).to_list(1000)
-    for a in admins:
-        await _notify(a["id"], notification_type, title, body, data)
-
-
-async def _check_admin_anomalies(user_id: str, email: str, ip: str, success: bool):
-    """Push anomaly alerts to all admins on:
-      1. Successful login from a never-before-seen IP for this admin
-      2. >=3 failed attempts for this email within the last 5 minutes
-    """
-    now = datetime.now(timezone.utc)
-
-    if success:
-        # Has this admin ever logged in from this IP before?
-        prior = await db.audit_log.find_one(
-            {"actor_id": user_id, "action": "admin.auth.success",
-             "meta.ip": ip, "created_at": {"$lt": now_iso()}},
-            {"_id": 0, "id": 1},
-        )
-        # Also skip if this is the very first success (genuine first login is not an anomaly)
-        first_ever = await db.audit_log.count_documents(
-            {"actor_id": user_id, "action": "admin.auth.success"}
-        )
-        if not prior and first_ever > 1:
-            await _notify_all_admins(
-                "security_anomaly",
-                "New admin login IP detected",
-                f"{email} signed in from {ip} — first time seen.",
-                {"kind": "new_ip", "email": email, "ip": ip, "user_id": user_id},
-            )
-    else:
-        # Count recent failures for this email
-        since = (now - timedelta(minutes=5)).isoformat()
-        fail_count = await db.audit_log.count_documents({
-            "action": {"$in": ["admin.auth.failed", "admin.auth.2fa_failed"]},
-            "meta.email": email,
-            "created_at": {"$gte": since},
-        })
-        if fail_count >= 3:
-            # Avoid spamming — only alert when we hit the threshold (3, 6, 9…)
-            if fail_count % 3 == 0:
-                await _notify_all_admins(
-                    "security_anomaly",
-                    "Admin login brute-force detected",
-                    f"{fail_count} failed attempts for {email} in the last 5 minutes (last IP {ip}).",
-                    {"kind": "brute_force", "email": email, "ip": ip, "count": fail_count},
-                )
-
-
-def _generate_recovery_codes(n: int = 10) -> List[str]:
-    """Generate human-readable one-time recovery codes like XK3F-7P2M-9QRS."""
-    import secrets
-    alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # no ambiguous chars
-    codes = []
-    for _ in range(n):
-        parts = [''.join(secrets.choice(alphabet) for _ in range(4)) for _ in range(3)]
-        codes.append("-".join(parts))
-    return codes
-
-
-def _hash_recovery_code(code: str) -> str:
-    normalized = code.replace("-", "").replace(" ", "").upper()
-    return bcrypt.hashpw(normalized.encode(), bcrypt.gensalt()).decode()
-
-
-def _verify_recovery_code(code: str, hashed_list: List[str]) -> int:
-    """Returns index of matched hash or -1."""
-    normalized = code.replace("-", "").replace(" ", "").upper()
-    for i, h in enumerate(hashed_list):
-        try:
-            if bcrypt.checkpw(normalized.encode(), h.encode()):
-                return i
-        except Exception:
-            continue
-    return -1
 
 def get_stripe_checkout(request: Request) -> StripeCheckout:
     host_url = str(request.base_url).rstrip('/')
@@ -980,9 +628,42 @@ async def export_stream(stream_id: str, body: ExportStream, current_user: User =
     allowed = {"youtube", "twitch", "x", "custom"}
     if body.platform not in allowed:
         raise HTTPException(status_code=400, detail="Unsupported platform")
+
+    # For YouTube/Twitch we attempt a real publish if the streamer has a linked
+    # OAuth connection. Otherwise we fall back to the legacy mock URL record —
+    # same shape, same contract, so the frontend doesn't break.
+    mock = True
+    target_url = body.target_url or f"https://{body.platform}.com/viewclip/{stream_id}"
+    note = None
+    try:
+        import export_service as _oauth_svc  # lazy import to avoid circular
+        if body.platform == "youtube":
+            result = await _oauth_svc.publish_to_youtube(
+                current_user.id,
+                stream.get("title", "View/Clip stream"),
+                stream.get("description", "") or "Exported from View/Clip.",
+                ["viewclip", "live", "stream"],
+            )
+            mock = bool(result.get("mock"))
+            target_url = result.get("url") or target_url
+            note = result.get("reason") or result.get("note")
+        elif body.platform == "twitch":
+            result = await _oauth_svc.publish_to_twitch(
+                current_user.id,
+                stream.get("title", "View/Clip stream"),
+                stream.get("description", "") or "Exported from View/Clip.",
+            )
+            mock = bool(result.get("mock"))
+            target_url = result.get("url") or target_url
+            note = result.get("reason") or result.get("note")
+    except Exception as e:
+        logger.warning("Real publish failed, falling back to mock: %s", e)
+
     export_record = {
         "platform": body.platform,
-        "target_url": body.target_url or f"https://{body.platform}.com/viewclip/{stream_id}",
+        "target_url": target_url,
+        "mock": mock,
+        "note": note,
         "exported_at": now_iso(),
     }
     await db.live_streams.update_one(
@@ -1656,160 +1337,9 @@ async def admin_list_payouts(_admin: User = Depends(require_admin)):
     return {"payouts": payouts}
 
 # =============================================================================
-# REFERRALS
+# REFERRALS / FOLLOWS / NOTIFICATIONS / SEARCH / TRENDING
+# Moved to backend/routers/{social,notifications}.py (mounted in include_router section).
 # =============================================================================
-@api_router.get("/referrals/my")
-async def my_referrals(current_user: User = Depends(get_current_user)):
-    user = await db.users.find_one({"id": current_user.id}, {"_id": 0, "referral_code": 1, "referral_earnings": 1})
-    # Backfill missing code for legacy users
-    code = (user or {}).get("referral_code")
-    if not code:
-        code = _generate_referral_code(current_user.name, current_user.id)
-        await db.users.update_one({"id": current_user.id}, {"$set": {"referral_code": code}})
-    referred_users = await db.users.count_documents({"referred_by": current_user.id})
-    events = await db.referral_events.find({"referrer_id": current_user.id}, {"_id": 0}).sort("created_at", -1).to_list(100)
-    return {
-        "code": code,
-        "referred_count": referred_users,
-        "earnings": round(float((user or {}).get("referral_earnings", 0.0)), 4),
-        "events": events,
-    }
-
-@api_router.get("/referrals/leaderboard")
-async def referral_leaderboard():
-    """Top 50 referrers by referral_earnings. Public — no auth required."""
-    pipeline = [
-        {"$match": {"referral_earnings": {"$gt": 0}}},
-        {"$sort": {"referral_earnings": -1}},
-        {"$limit": 50},
-        {"$project": {"_id": 0, "name": 1, "referral_code": 1, "referral_earnings": 1, "role": 1}},
-    ]
-    rows = await db.users.aggregate(pipeline).to_list(50)
-    # add referred_count
-    enriched = []
-    for i, r in enumerate(rows):
-        count = await db.users.count_documents({"referred_by": (await db.users.find_one({"referral_code": r["referral_code"]}, {"_id": 0, "id": 1}))["id"]})
-        enriched.append({**r, "rank": i + 1, "referred_count": count, "earnings": round(r["referral_earnings"], 2)})
-    return {"leaderboard": enriched}
-
-@api_router.get("/referrals/validate/{code}")
-async def validate_referral_code(code: str):
-    user = await db.users.find_one({"referral_code": code.upper()}, {"_id": 0, "name": 1})
-    if not user:
-        return {"valid": False}
-    return {"valid": True, "referrer_name": user["name"]}
-
-# =============================================================================
-# FOLLOW / UNFOLLOW STREAMERS
-# =============================================================================
-@api_router.post("/streamers/{streamer_id}/follow")
-async def follow_streamer(streamer_id: str, current_user: User = Depends(get_current_user)):
-    if streamer_id == current_user.id:
-        raise HTTPException(status_code=400, detail="Cannot follow yourself")
-    streamer = await db.users.find_one({"id": streamer_id}, {"_id": 0, "name": 1, "role": 1})
-    if not streamer:
-        raise HTTPException(status_code=404, detail="Streamer not found")
-
-    existing = await db.follows.find_one({"follower_id": current_user.id, "streamer_id": streamer_id})
-    if existing:
-        return {"message": "Already following", "following": True}
-
-    await db.follows.insert_one({
-        "id": str(uuid.uuid4()),
-        "follower_id": current_user.id,
-        "streamer_id": streamer_id,
-        "created_at": now_iso(),
-    })
-    await _notify(streamer_id, "new_follower",
-                  "New follower!",
-                  f"{current_user.name} started following you.",
-                  {"follower_id": current_user.id})
-    return {"message": "Followed", "following": True}
-
-@api_router.post("/streamers/{streamer_id}/unfollow")
-async def unfollow_streamer(streamer_id: str, current_user: User = Depends(get_current_user)):
-    res = await db.follows.delete_one({"follower_id": current_user.id, "streamer_id": streamer_id})
-    return {"message": "Unfollowed" if res.deleted_count else "Was not following", "following": False}
-
-@api_router.get("/streamers/{streamer_id}/follow-status")
-async def follow_status(streamer_id: str, current_user: User = Depends(get_current_user)):
-    exists = await db.follows.find_one({"follower_id": current_user.id, "streamer_id": streamer_id})
-    followers = await db.follows.count_documents({"streamer_id": streamer_id})
-    return {"following": exists is not None, "followers_count": followers}
-
-@api_router.get("/users/me/follows")
-async def my_follows(current_user: User = Depends(get_current_user)):
-    rows = await db.follows.find({"follower_id": current_user.id}, {"_id": 0}).sort("created_at", -1).to_list(1000)
-    # Enrich with streamer info
-    out = []
-    for r in rows:
-        s = await db.users.find_one({"id": r["streamer_id"]}, {"_id": 0, "id": 1, "name": 1, "role": 1})
-        if s:
-            # find latest live stream by this streamer
-            live = await db.live_streams.find_one({"streamer_id": r["streamer_id"], "is_live": True}, {"_id": 0})
-            out.append({**s, "followed_at": r["created_at"], "live_stream_id": (live or {}).get("id")})
-    return {"follows": out}
-
-# =============================================================================
-# NOTIFICATIONS
-# =============================================================================
-@api_router.get("/notifications")
-async def list_notifications(current_user: User = Depends(get_current_user)):
-    rows = await db.notifications.find({"user_id": current_user.id}, {"_id": 0}).sort("created_at", -1).to_list(200)
-    unread = sum(1 for r in rows if not r.get("read"))
-    return {"notifications": rows, "unread_count": unread}
-
-@api_router.post("/notifications/{notification_id}/read")
-async def mark_notification_read(notification_id: str, current_user: User = Depends(get_current_user)):
-    res = await db.notifications.update_one(
-        {"id": notification_id, "user_id": current_user.id},
-        {"$set": {"read": True}}
-    )
-    if res.matched_count == 0:
-        raise HTTPException(status_code=404, detail="Notification not found")
-    return {"message": "marked read"}
-
-@api_router.post("/notifications/read-all")
-async def mark_all_read(current_user: User = Depends(get_current_user)):
-    res = await db.notifications.update_many(
-        {"user_id": current_user.id, "read": False},
-        {"$set": {"read": True}}
-    )
-    return {"message": "all marked read", "count": res.modified_count}
-
-# =============================================================================
-# SEARCH
-# =============================================================================
-@api_router.get("/search")
-async def search(q: str):
-    """Unified search across content, streams and streamers."""
-    q_str = (q or "").strip()
-    if len(q_str) < 2:
-        return {"content": [], "streams": [], "streamers": [], "query": q_str}
-    regex = {"$regex": q_str, "$options": "i"}
-    content = await db.content.find(
-        {"$or": [{"title": regex}, {"description": regex}], "is_promo": {"$ne": True}},
-        {"_id": 0}
-    ).limit(20).to_list(20)
-    streams = await db.live_streams.find(
-        {"$or": [{"title": regex}, {"description": regex}, {"streamer_name": regex}]},
-        {"_id": 0}
-    ).sort("start_time", -1).limit(20).to_list(20)
-    streamers = await db.users.find(
-        {"role": {"$in": ["streamer", "admin"]}, "name": regex},
-        {"_id": 0, "password_hash": 0}
-    ).limit(20).to_list(20)
-    return {"content": content, "streams": streams, "streamers": streamers, "query": q_str}
-
-# =============================================================================
-# TRENDING
-# =============================================================================
-@api_router.get("/trending")
-async def trending():
-    """Top VOD content and live streams ranked by views."""
-    content = await db.content.find({"is_promo": {"$ne": True}}, {"_id": 0}).sort("views", -1).limit(12).to_list(12)
-    streams = await db.live_streams.find({"is_live": True}, {"_id": 0}).sort("viewers_count", -1).limit(12).to_list(12)
-    return {"content": content, "live_streams": streams}
 
 # =============================================================================
 # STREAMER ANALYTICS
@@ -1958,27 +1488,7 @@ async def admin_system_health(_admin: User = Depends(require_admin)):
     }
 
 
-# Public health endpoints for k8s liveness / readiness probes (NO auth required).
-@api_router.get("/health")
-async def public_health():
-    """Liveness probe — always-green if the app process is up."""
-    return {"status": "ok", "version": os.environ.get("APP_VERSION", "1.4.0")}
-
-
-@api_router.get("/ready")
-async def public_ready():
-    """Readiness probe — returns 503 if any DB layer fails to respond."""
-    async def ping(dbh):
-        try:
-            await dbh.command("ping")
-            return True
-        except Exception:
-            return False
-    oks = await asyncio.gather(ping(db_identity), ping(db_streaming), ping(db_vault))
-    if not all(oks):
-        return JSONResponse(status_code=503, content={"status": "degraded",
-                                                       "identity": oks[0], "streaming": oks[1], "vault": oks[2]})
-    return {"status": "ready"}
+# Public health/ready endpoints moved to routers/health.py (mounted below).
 
 @api_router.post("/admin/system/reload-settings")
 async def admin_reload_settings(_admin: User = Depends(require_admin)):
@@ -2013,7 +1523,7 @@ async def admin_rotate_keys(_admin: User = Depends(require_admin)):
     from cryptography.fernet import Fernet as _F
 
     new_key = _F.generate_key().decode()
-    old_cipher = _vault_cipher
+    old_cipher = _crypto.current_cipher()
     new_cipher = _F(new_key.encode())
 
     # Re-encrypt banking_info records
@@ -2053,8 +1563,9 @@ async def admin_rotate_keys(_admin: User = Depends(require_admin)):
         except Exception:
             totp_failed += 1
 
-    # Swap active cipher in-process
-    _vault_cipher = new_cipher
+    # Swap active cipher in-process (both in core.crypto and local aliases)
+    _crypto.replace_cipher(new_key)
+    _vault_cipher = _crypto.current_cipher()
     _VAULT_KEY = new_key
 
     event = {
@@ -2141,6 +1652,19 @@ async def admin_streaming_switch(body: Dict[str, str], _admin: User = Depends(re
 # APP SETUP
 # =============================================================================
 app.include_router(api_router)
+
+# Extracted routers (backend/routers/*). Mounted after api_router so duplicate
+# paths would collide obviously. Endpoints in these files do NOT live in
+# server.py anymore — edit the source module.
+from routers import health as _health_router  # noqa: E402
+from routers import notifications as _notifications_router  # noqa: E402
+from routers import social as _social_router  # noqa: E402
+from routers import oauth as _oauth_router  # noqa: E402
+
+app.include_router(_health_router.router)
+app.include_router(_notifications_router.router)
+app.include_router(_social_router.router)
+app.include_router(_oauth_router.router)
 
 # =============================================================================
 # LEVEL-3 LOGIC FIREWALL MIDDLEWARE
@@ -2243,12 +1767,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
 
 
 # =============================================================================

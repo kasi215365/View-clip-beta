@@ -6,7 +6,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
-import { Radio, DollarSign, Eye, Gift, LogOut, User as UserIcon, Home, Save, Upload, Youtube, Twitch, BarChart3, Users2, Heart } from 'lucide-react';
+import { Radio, DollarSign, Eye, Gift, LogOut, User as UserIcon, Home, Save, Upload, Youtube, Twitch, BarChart3, Users2, Heart, Link2 as LinkIcon } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import Logo from '@/components/Logo';
 import NotificationBell from '@/components/NotificationBell';
@@ -23,22 +23,38 @@ const StreamerDashboard = () => {
   const [loading, setLoading] = useState(true);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [exportStream, setExportStream] = useState(null); // stream object for export modal
+  const [oauth, setOauth] = useState({ connections: [], available_providers: [] });
   const [newStream, setNewStream] = useState({ title: '', description: '', video_url: '', thumbnail_url: '' });
 
   useEffect(() => { fetchData(); }, []);
 
+  // Surface the OAuth callback status in the URL the backend redirects to.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const provider = params.get('oauth');
+    const status = params.get('status');
+    if (provider && status) {
+      if (status === 'connected') toast.success(`${provider.toUpperCase()} connected`);
+      else toast.error(`${provider.toUpperCase()} link failed: ${params.get('msg') || status}`);
+      // Clean URL
+      window.history.replaceState({}, '', window.location.pathname);
+    }
+  }, []);
+
   const fetchData = async () => {
     try {
-      const [streamsRes, earningsRes, totalRes, analyticsRes] = await Promise.all([
+      const [streamsRes, earningsRes, totalRes, analyticsRes, oauthRes] = await Promise.all([
         axios.get(`${API}/streams`),
         axios.get(`${API}/earnings`),
         axios.get(`${API}/earnings/total`),
         axios.get(`${API}/streamers/me/analytics`),
+        axios.get(`${API}/oauth/connections`).catch(() => ({ data: { connections: [], available_providers: [] } })),
       ]);
       setMyStreams(streamsRes.data.filter((s) => s.streamer_id === user.id));
       setEarnings(earningsRes.data);
       setTotalEarnings(totalRes.data.total_earnings);
       setAnalytics(analyticsRes.data);
+      setOauth(oauthRes.data);
     } catch (e) {
       toast.error('Failed to load dashboard data');
     } finally {
@@ -82,12 +98,44 @@ const StreamerDashboard = () => {
   const handleExport = async (platform) => {
     try {
       const r = await axios.post(`${API}/streams/${exportStream.id}/export`, { platform });
-      toast.success(`Exported to ${platform.toUpperCase()}: ${r.data.export.target_url}`);
+      const exp = r.data.export || {};
+      const suffix = exp.mock ? ' (mock — connect account to publish for real)' : '';
+      toast.success(`Exported to ${platform.toUpperCase()}: ${exp.target_url}${suffix}`);
       setExportStream(null);
       fetchData();
     } catch (e) {
       toast.error(e.response?.data?.detail || 'Export failed');
     }
+  };
+
+  const handleConnectOAuth = async (provider) => {
+    try {
+      const r = await axios.post(`${API}/oauth/${provider}/start`);
+      if (r.data.mock) {
+        toast.error(r.data.message || `${provider} not configured`);
+        return;
+      }
+      window.location.href = r.data.authorization_url;
+    } catch (e) {
+      toast.error(e.response?.data?.detail || 'Failed to start OAuth flow');
+    }
+  };
+
+  const handleDisconnectOAuth = async (provider) => {
+    if (!window.confirm(`Disconnect ${provider.toUpperCase()} from your View/Clip account?`)) return;
+    try {
+      await axios.post(`${API}/oauth/${provider}/disconnect`);
+      toast.success(`${provider.toUpperCase()} disconnected`);
+      fetchData();
+    } catch (e) {
+      toast.error('Failed to disconnect');
+    }
+  };
+
+  const oauthStatus = (provider) => {
+    const conn = (oauth.connections || []).find((c) => c.provider === provider);
+    const avail = (oauth.available_providers || []).find((p) => p.id === provider);
+    return { connected: !!conn, displayName: conn?.display_name, configured: avail?.configured };
   };
 
   if (loading) return <div className="flex items-center justify-center min-h-screen bg-[#05070F]"><div className="spinner"></div></div>;
@@ -165,6 +213,59 @@ const StreamerDashboard = () => {
               <div className="flex items-center justify-between mb-4"><Eye className="w-10 h-10 text-cyan-400" /><span className="bg-cyan-400/20 px-3 py-1 rounded-full text-cyan-400 text-sm font-semibold">Views</span></div>
               <h3 className="text-3xl font-bold mb-1">{myStreams.reduce((s, x) => s + x.views, 0).toLocaleString()}</h3>
               <p className="text-gray-400 text-sm">{myStreams.reduce((s, x) => s + (x.qualified_views || 0), 0).toLocaleString()} qualified</p>
+            </div>
+          </div>
+
+          {/* OAuth connections for Export */}
+          <div data-testid="oauth-connections-card" className="glass-panel rounded-xl p-6 mb-8 border border-fuchsia-500/20">
+            <div className="flex items-center gap-3 mb-1">
+              <LinkIcon className="w-5 h-5 text-fuchsia-400" />
+              <h2 className="text-xl font-bold">Linked Export Accounts</h2>
+            </div>
+            <p className="text-sm text-gray-400 mb-4">
+              Connect your YouTube and Twitch accounts so the Export button publishes to your real channel. Without a link, exports are recorded in mock mode.
+            </p>
+            <div className="grid md:grid-cols-2 gap-4">
+              {['youtube', 'twitch'].map((p) => {
+                const s = oauthStatus(p);
+                const label = p === 'youtube' ? 'YouTube' : 'Twitch';
+                const iconClr = p === 'youtube' ? 'text-red-500' : 'text-purple-400';
+                const Icon = p === 'youtube' ? Youtube : Twitch;
+                return (
+                  <div key={p} data-testid={`oauth-card-${p}`} className="bg-black/30 border border-white/5 rounded-lg p-4 flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      <Icon className={`w-6 h-6 ${iconClr}`} />
+                      <div>
+                        <div className="font-semibold">{label}</div>
+                        <div className="text-xs text-gray-400">
+                          {s.connected
+                            ? <>Linked as <span className="text-green-400">{s.displayName}</span></>
+                            : s.configured
+                              ? 'Not linked'
+                              : 'Not configured on this deployment'}
+                        </div>
+                      </div>
+                    </div>
+                    {s.connected ? (
+                      <Button
+                        data-testid={`oauth-disconnect-${p}-btn`}
+                        onClick={() => handleDisconnectOAuth(p)}
+                        className="bg-red-500/80 hover:bg-red-600 text-white text-sm"
+                      >
+                        Disconnect
+                      </Button>
+                    ) : (
+                      <Button
+                        data-testid={`oauth-connect-${p}-btn`}
+                        onClick={() => handleConnectOAuth(p)}
+                        className="bg-fuchsia-500 hover:bg-fuchsia-600 text-white text-sm"
+                      >
+                        Connect
+                      </Button>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           </div>
 

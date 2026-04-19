@@ -110,7 +110,67 @@ To disable: same card → **Disable** → enter current 6-digit code.
 
 Every 2FA event (setup, enabled, disabled, failed code) is written to `audit_log`.
 
-## Troubleshooting
+## 5. YouTube & Twitch Stream Export OAuth (optional)
+
+When streamers click **Export → YouTube / Twitch** on a saved stream, View/Clip
+will publish to their real channel **if** they've linked their account via
+OAuth. Without credentials configured, export falls back to the mock URL it
+always used (`mock: true, note: "not_connected"`).
+
+Edit `/app/backend/.env` and set:
+
+```bash
+YOUTUBE_CLIENT_ID=""
+YOUTUBE_CLIENT_SECRET=""
+YOUTUBE_REDIRECT_URI="https://<your-app>.com/api/oauth/youtube/callback"
+
+TWITCH_CLIENT_ID=""
+TWITCH_CLIENT_SECRET=""
+TWITCH_REDIRECT_URI="https://<your-app>.com/api/oauth/twitch/callback"
+```
+
+Then restart: `sudo supervisorctl restart backend`.
+
+### Where to get each value
+
+**YouTube (Google Cloud Console)**
+1. https://console.cloud.google.com/apis/credentials → **Create Credentials → OAuth client ID → Web application**
+2. Authorized redirect URI: paste `YOUTUBE_REDIRECT_URI` exactly
+3. Enable **YouTube Data API v3** at https://console.cloud.google.com/apis/library/youtube.googleapis.com
+4. Copy client ID and secret into `.env`
+5. Scopes requested automatically: `youtube.upload`, `youtube.readonly`
+
+**Twitch (Twitch Developer Console)**
+1. https://dev.twitch.tv/console/apps/create
+2. OAuth Redirect URL: paste `TWITCH_REDIRECT_URI`
+3. Category: **Application Integration**
+4. Copy client ID + generate client secret → `.env`
+5. Scopes requested automatically: `clips:edit`, `channel:manage:videos`, `user:read:email`
+
+### What the streamer sees
+
+Streamer Dashboard → **Linked Export Accounts** card shows Connect / Disconnect
+buttons for each provider, plus live status. Clicking **Connect** redirects the
+streamer to the provider's consent screen; we round-trip back through
+`/api/oauth/{provider}/callback` which persists the access/refresh tokens in
+`oauth_connections` (refresh token AES-encrypted via the Vault cipher).
+
+Verify:
+```bash
+curl -s <backend>/api/oauth/connections -H "Authorization: Bearer $TOKEN"
+# → {"connections":[...], "available_providers":[{"id":"youtube","configured":true}, ...]}
+```
+
+### Troubleshooting
+
+| Symptom | Fix |
+|---|---|
+| `mock=true`, `reason=not_connected` on export | Streamer hasn't clicked Connect, or token expired and refresh failed |
+| `invalid_state` on callback redirect | State TTL (10 min) elapsed — click Connect again |
+| `redirect_uri_mismatch` from Google/Twitch | The `REDIRECT_URI` env var must match the OAuth app config **exactly**, including trailing slash |
+| `publish_failed_403` from YouTube | The channel hasn't verified its YouTube account for uploads (one-time via YouTube Studio) |
+
+## 6. Troubleshooting
 
 | Symptom | Likely cause | Fix |
 |---|---|---|

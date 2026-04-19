@@ -26,6 +26,33 @@ A hybrid VOD + Live Streaming platform (Hulu/ESPN meets Twitch/Bigo-Live) brande
 
 ## Implemented (CHANGELOG)
 
+### 2026-02 (phase 7) — Migration-proofing + partial router refactor + YouTube/Twitch OAuth (v1.4.0)
+
+**Migration-proofing (never lose the codebase):**
+- `MIGRATION.md` — 9-section comprehensive guide (env-var inventory, Atlas / DocumentDB / self-host options, secret stores by host, rollback plan, post-migration smoke tests).
+- `backend/.env.example` + `frontend/.env.example` — every variable documented, grouped, with defaults.
+- `docker-compose.yml` + `backend/Dockerfile` + `frontend/Dockerfile` — `docker compose up -d` spins the entire stack on any Docker host. Healthchecks wired to `/api/health`.
+- `scripts/export_for_migration.sh` — one-command bundle: code + `.env` + `mongodump` of all 3 DBs + `MANIFEST.json` (collection counts, git SHA, app version) + `CHECKLIST.md` + ready-to-run `restore.sh`.
+- `scripts/audit_deps.sh` — CI-ready audit; fails if any proprietary/non-PyPI-non-npm dependency is introduced.
+- `DEPENDENCY_AUDIT.md` — flagged `emergentintegrations` as the sole proprietary dep; drop-in replacement using the official `stripe` SDK already shipped documented inline.
+
+**Phase 2a — Partial router refactor (server.py 2,338 → 1,820 lines):**
+- New `backend/core/` package: `db.py`, `crypto.py`, `constants.py`, `models.py`, `auth.py`, `helpers.py` (~700 lines of shared state lifted out).
+- New `backend/routers/` package with 3 extracted groups: `health.py`, `notifications.py`, `social.py` (follows + referrals + search + trending).
+- `server.py` now imports shared symbols + mounts the routers; `admin_rotate_keys` delegates to `core.crypto.replace_cipher`. Full regression = 100% pass.
+- Remaining (scheduled for Phase 2b): split `auth`, `admin`, `streaming`, `payments`, `vault` into their own routers.
+
+**Phase 3 — YouTube + Twitch export OAuth with graceful mock fallback:**
+- `backend/export_service.py` — full OAuth 2.0 flow (auth URL, code exchange, refresh, profile fetch) + publish helpers for YouTube `videos.insert` (metadata) and Twitch Helix videos.
+- `backend/routers/oauth.py` — `POST /api/oauth/{provider}/start`, `GET /api/oauth/{provider}/callback`, `GET /api/oauth/connections`, `POST /api/oauth/{provider}/disconnect`.
+- CSRF state tokens stored in `oauth_states` with 10-minute TTL; consumed exactly once.
+- Refresh tokens encrypted at rest via the Vault Fernet cipher (tied into key-rotation worker automatically).
+- `POST /api/streams/{id}/export` now attempts a real publish first; falls back to mock when the streamer hasn't linked their account (`mock: true, note: 'not_connected'`).
+- Frontend — new "Linked Export Accounts" card on the Streamer Dashboard with Connect / Disconnect buttons, live status ("Linked as {display_name}" or "Not configured on this deployment"), and OAuth-callback toast handling.
+- `ACTIVATION.md` §5 — step-by-step instructions for obtaining YouTube (Google Cloud Console) + Twitch (dev.twitch.tv) OAuth credentials.
+
+**Bug fix:** `LiveStream.exports` was typed as `List[Dict[str, str]]` but actual records contain `mock: bool` + `note: Optional[str]` — caused 500s on the streams list after the export integration. Replaced with a typed `StreamExportRecord` model (caught during iteration 8 regression).
+
 ### 2026-02 (phase 6) — Production hardening (v1.4.0)
 - **TOTP secrets encrypted at rest** — `users.totp_secret` now stored as Fernet ciphertext; `admin_2fa_enable` encrypts, `admin_2fa_disable` + login decrypt transparently.
 - **10 one-time recovery codes** — issued in `XXXX-XXXX-XXXX` format on `2fa/enable` (returned ONCE), stored only as bcrypt hashes; admin login accepts a recovery code in `totp_code` and consumes it.
