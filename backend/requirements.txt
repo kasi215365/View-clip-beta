@@ -68,3 +68,7 @@ urllib3==2.5.0
 uvicorn==0.25.0
 watchfiles==1.1.1
 stripe==5.4.0
+pyotp==2.9.0
+
+
+
