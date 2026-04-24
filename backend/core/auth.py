@@ -1,3 +1,15 @@
+import sys
+import os
+
+print("\n--- !! RAILWAY DEBUG START !! ---")
+print(f"Current Directory: {os.getcwd()}")
+print(f"Python Path: {sys.path}")
+try:
+    import jwt
+    print("SUCCESS: jwt is present")
+except ImportError:
+    print("FAILURE: jwt is NOT installed in this environment")
+print("--- !! RAILWAY DEBUG END !! ---\n")
 """JWT + authentication dependency helpers."""
 import os
 from datetime import datetime, timedelta, timezone
