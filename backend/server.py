@@ -10,6 +10,7 @@ Everything else lives under `core/` (shared state) and `routers/` (endpoints).
 """
 import logging
 import os
+import sys
 import uuid
 from pathlib import Path
 
@@ -19,6 +20,9 @@ from fastapi.middleware.cors import CORSMiddleware
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
+
+# Ensure backend is in the path for relative imports
+sys.path.insert(0, str(ROOT_DIR))
 
 logging.basicConfig(
     level=logging.INFO,
