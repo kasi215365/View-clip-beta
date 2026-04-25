@@ -21,4 +21,4 @@ RUN printf 'server {\n\
 }\n' > /etc/nginx/conf.d/default.conf
 
 COPY --from=build /app/build /usr/share/nginx/html
-EXPOSE 80
+CMD sed -i "s/listen 80;/listen ${PORT};/" /etc/nginx/conf.d/default.conf && nginx -g 'daemon off;'
