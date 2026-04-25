@@ -15,7 +15,7 @@ import os
 from datetime import datetime, timedelta, timezone
 
 import bcrypt
-jose import jwt
+from jose import jwt
 from fastapi import Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
