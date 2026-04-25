@@ -5,7 +5,7 @@ print("\n--- !! RAILWAY DEBUG START !! ---")
 print(f"Current Directory: {os.getcwd()}")
 print(f"Python Path: {sys.path}")
 try:
-    import jwt
+    from jose import jwt
     print("SUCCESS: jwt is present")
 except ImportError:
     print("FAILURE: jwt is NOT installed in this environment")
