@@ -48,17 +48,11 @@ app = FastAPI(title="View/Clip")
 app.add_middleware(FirewallMiddleware)
 app.add_middleware(RequestIDMiddleware)
 from fastapi.middleware.cors import CORSMiddleware
-
-# ... (other code like app = FastAPI())
-
+app.add_middleware(RequestIDMiddleware)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "https://viewclip.up.railway.app",
-        "http://localhost:3000",
-        "http://localhost:8001"
-    ],
     allow_credentials=True,
+    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
     allow_methods=["*"],
     allow_headers=["*"],
 )
