@@ -1,3 +1,28 @@
+# from live_stream_service import stop_stream, PROJECT_ID, LOCATION
+# from google.cloud.video import live_stream_v1
+
+@router.post("/kill-all-streams")
+async def kill_all_streams():
+    """Emergency shutdown for all active GCP infrastructure."""
+    try:
+        from google.cloud.video import live_stream_v1
+        from live_stream_service import stop_stream, PROJECT_ID, LOCATION
+
+        client = live_stream_v1.LivestreamServiceClient()
+        parent = f"projects/{PROJECT_ID}/locations/{LOCATION}"
+        
+        channels = client.list_channels(parent=parent)
+        count = 0
+        for channel in channels:
+            # Extract ID from 'projects/.../locations/.../channels/ID'
+            c_id = channel.name.split('/')[-1]
+            stream_id = c_id.replace("vc-ch-", "")
+            await stop_stream(stream_id)
+            count += 1
+            
+        return {"status": "success", "terminated": count}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 """Admin command center — stats, users, settings, payouts, system/health,
 deploy-update, rotate-keys, system events, audit log, streaming-provider switch."""
 import logging
@@ -315,6 +340,53 @@ async def admin_audit(_admin: User = Depends(require_admin)):
     logs = await db.audit_log.find({}, {"_id": 0}).sort("created_at", -1).to_list(200)
     return {"audit": logs}
 
+# -----------------------------------------------------------------------------
+# EMERGENCY SHUTDOWN
+# -----------------------------------------------------------------------------
+@router.post("/admin/system/emergency-kill-streams")
+async def admin_emergency_kill_streams(_admin: User = Depends(require_admin)):
+    """The 'Big Red Button' — terminates all active GCP channels immediately."""
+    try:
+        from google.cloud.video import live_stream_v1
+        from live_stream_service import PROJECT_ID, LOCATION, stop_stream
+
+        # Initialize the Google client directly for the listing
+        client_gcp = live_stream_v1.LivestreamServiceClient()
+        parent = f"projects/{PROJECT_ID}/locations/{LOCATION}"
+        
+        # 1. Fetch every channel currently on the GCP account
+        channels = client_gcp.list_channels(parent=parent)
+        terminated_count = 0
+        
+        for channel in channels:
+            # Extract ID from 'projects/.../channels/ID'
+            c_id = channel.name.split('/')[-1]
+            # Convert channel ID back to stream_id (removing our prefix)
+            stream_id = c_id.replace("vc-ch-", "")
+            
+            # Use your existing stop_stream function to clean up channel + input
+            await live_stream_service.stop_stream(stream_id)
+            terminated_count += 1
+
+        # 2. Log the audit event so you know who 'pulled the lever'
+        await db.audit_log.insert_one({
+            "id": str(uuid.uuid4()),
+            "actor_id": _admin.id,
+            "action": "system.emergency_kill",
+            "meta": {"terminated_count": terminated_count, "timestamp": now_iso()},
+            "created_at": now_iso(),
+        })
+
+        logger.warning(f"EMERGENCY KILL executed by admin {_admin.id}. {terminated_count} streams stopped.")
+        
+        return {
+            "message": "Emergency shutdown complete",
+            "terminated_count": terminated_count,
+            "status": "success"
+        }
+    except Exception as e:
+        logger.error(f"Emergency kill failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Shutdown failed: {str(e)}")
 
 # -----------------------------------------------------------------------------
 # STREAMING PROVIDERS
