@@ -228,36 +228,32 @@ async def admin_system_health(_admin: User = Depends(require_admin)):
         },
         "encryption": {"algorithm": "Fernet (AES-128-CBC + HMAC-SHA256)",
                        "vault_key_configured": vault_key_configured()},
-                "integrations": {
+                    "integrations": {
             "stripe_mode": "real" if stripe_service.real_stripe_enabled() else "mock (emergentintegrations)",
             "livestream_mode": "gcp-livestream" if live_stream_service.is_live_enabled() else "mock",
             "gcp_burn_stats": await live_stream_service.active_channels_cost(),
-        },@router.post("/admin/system/emergency-kill-streams")
+        },
+    } # <--- THIS BRACKET WAS MISSING, CLOSING THE HEALTH CHECK
+
+@router.post("/admin/system/emergency-kill-streams")
 async def admin_emergency_kill_streams(_admin: User = Depends(require_admin)):
     """The 'Big Red Button' — terminates all active GCP channels immediately."""
     try:
         from google.cloud.video import live_stream_v1
         from live_stream_service import PROJECT_ID, LOCATION, stop_stream
 
-        # Initialize the Google client directly for the listing
         client_gcp = live_stream_v1.LivestreamServiceClient()
         parent = f"projects/{PROJECT_ID}/locations/{LOCATION}"
         
-        # 1. Fetch every channel currently on the GCP account
         channels = client_gcp.list_channels(parent=parent)
         terminated_count = 0
         
         for channel in channels:
-            # Extract ID from 'projects/.../channels/ID'
             c_id = channel.name.split('/')[-1]
-            # Convert channel ID back to stream_id (removing our prefix)
             stream_id = c_id.replace("vc-ch-", "")
-            
-            # Use your existing stop_stream function to clean up channel + input
             await live_stream_service.stop_stream(stream_id)
             terminated_count += 1
 
-        # 2. Log the audit event for accountability
         await db.audit_log.insert_one({
             "id": str(uuid.uuid4()),
             "actor_id": _admin.id,
@@ -276,8 +272,6 @@ async def admin_emergency_kill_streams(_admin: User = Depends(require_admin)):
     except Exception as e:
         logger.error(f"Emergency kill failed: {e}")
         raise HTTPException(status_code=500, detail=f"Shutdown failed: {str(e)}")
-
-
 
 @router.post("/admin/system/reload-settings")
 async def admin_reload_settings(_admin: User = Depends(require_admin)):
@@ -298,7 +292,6 @@ async def admin_deploy_update(_admin: User = Depends(require_admin)):
     }
     await db.system_events.insert_one(event.copy())
     return {"message": f"Update v{version} applied", "event": event}
-
 
 @router.post("/admin/system/rotate-keys")
 async def admin_rotate_keys(_admin: User = Depends(require_admin)):
@@ -384,53 +377,6 @@ async def admin_audit(_admin: User = Depends(require_admin)):
     logs = await db.audit_log.find({}, {"_id": 0}).sort("created_at", -1).to_list(200)
     return {"audit": logs}
 
-# -----------------------------------------------------------------------------
-# EMERGENCY SHUTDOWN
-# -----------------------------------------------------------------------------
-@router.post("/admin/system/emergency-kill-streams")
-async def admin_emergency_kill_streams(_admin: User = Depends(require_admin)):
-    """The 'Big Red Button' — terminates all active GCP channels immediately."""
-    try:
-        from google.cloud.video import live_stream_v1
-        from live_stream_service import PROJECT_ID, LOCATION, stop_stream
-
-        # Initialize the Google client directly for the listing
-        client_gcp = live_stream_v1.LivestreamServiceClient()
-        parent = f"projects/{PROJECT_ID}/locations/{LOCATION}"
-        
-        # 1. Fetch every channel currently on the GCP account
-        channels = client_gcp.list_channels(parent=parent)
-        terminated_count = 0
-        
-        for channel in channels:
-            # Extract ID from 'projects/.../channels/ID'
-            c_id = channel.name.split('/')[-1]
-            # Convert channel ID back to stream_id (removing our prefix)
-            stream_id = c_id.replace("vc-ch-", "")
-            
-            # Use your existing stop_stream function to clean up channel + input
-            await live_stream_service.stop_stream(stream_id)
-            terminated_count += 1
-
-        # 2. Log the audit event so you know who 'pulled the lever'
-        await db.audit_log.insert_one({
-            "id": str(uuid.uuid4()),
-            "actor_id": _admin.id,
-            "action": "system.emergency_kill",
-            "meta": {"terminated_count": terminated_count, "timestamp": now_iso()},
-            "created_at": now_iso(),
-        })
-
-        logger.warning(f"EMERGENCY KILL executed by admin {_admin.id}. {terminated_count} streams stopped.")
-        
-        return {
-            "message": "Emergency shutdown complete",
-            "terminated_count": terminated_count,
-            "status": "success"
-        }
-    except Exception as e:
-        logger.error(f"Emergency kill failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Shutdown failed: {str(e)}")
 
 # -----------------------------------------------------------------------------
 # STREAMING PROVIDERS
