@@ -20,5 +20,5 @@ RUN printf 'server {\n\
   location /api { return 404; }\n\
 }\n' > /etc/nginx/conf.d/default.conf
 
-COPY --from=build /app/build /usr/share/nginx/html
-CMD sed -i "s/listen 80;/listen ${PORT};/" /etc/nginx/conf.d/default.conf && nginx -g 'daemon off;'
+EXPOSE 80
+CMD ["nginx", "-g", "daemon off;"]
