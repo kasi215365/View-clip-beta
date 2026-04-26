@@ -158,9 +158,33 @@ async def startup_bootstrap():
         "REAL (GCP)" if live_stream_service.is_live_enabled()
         else "MOCK (set GOOGLE_CLOUD_PROJECT + LIVESTREAM_GCS_BUCKET + "
              "GOOGLE_SERVICE_ACCOUNT_JSON/GOOGLE_APPLICATION_CREDENTIALS to activate)",
-    )
+    )    # Start the safety watchdog in the background
+    asyncio.create_task(run_watchdog())
+    logger.info("Watchdog protection system: ACTIVE")
 
 
+
+import asyncio
+
+async def run_watchdog():
+    """Background loop that checks for ghost streams every 5 minutes."""
+    while True:
+        try:
+            # We call the helper already in your service
+            stats = await live_stream_service.active_channels_cost()
+            
+            if stats.get("mode") == "gcp" and stats.get("active_channels", 0) > 0:
+                logger.warning(
+                    f"WATCHDOG ALERT: {stats['active_channels']} streams are ACTIVE. "
+                    f"Current burn: ${stats['estimated_hourly_cost']}/hr. "
+                    "Check Admin Dashboard if this is unexpected."
+                )
+            
+            # Sleep for 5 minutes (300 seconds)
+            await asyncio.sleep(300) 
+        except Exception as e:
+            logger.error(f"Watchdog loop error: {e}")
+            await asyncio.sleep(60) # Wait a minute and try again if it fails
 @app.on_event("shutdown")
 async def shutdown_db_client():
     client.close()
