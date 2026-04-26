@@ -368,11 +368,45 @@ const SettingRow = ({ label, children, testid }) => (
 );
 
 const SystemPanel = () => {
-  const [health, setHealth] = useState(null);
-  const [providers, setProviders] = useState(null);
-  const [events, setEvents] = useState([]);
-  const [audit, setAudit] = useState([]);
-  const [busy, setBusy] = useState(false);
+  // ... keep your existing state and refresh logic ...
+
+  return (
+    <div className="space-y-6">
+      {/* 1. THE BURN MONITOR (New Placement) */}
+      {health && health.integrations?.gcp_burn_stats && (
+        <div className="grid grid-cols-1 gap-6">
+           <BurnRateMonitor gcp_burn_stats={health.integrations.gcp_burn_stats} />
+        </div>
+      )}
+
+      {/* Health grid (Your existing code) */}
+      {health && (
+        <div data-testid="system-health" className="grid lg:grid-cols-2 gap-6">
+          {/* ... your existing Shield / System Health card ... */}
+          {/* ... your existing Encryption card ... */}
+        </div>
+      )}
+
+      {/* ... your existing Streaming providers hot-swap ... */}
+
+      {/* System actions */}
+      <div data-testid="system-actions" className="glass-panel rounded-xl p-6">
+        <h3 className="text-lg font-bold mb-4">System Actions</h3>
+        <div className="grid md:grid-cols-3 gap-3">
+          {/* ... your 3 existing buttons ... */}
+        </div>
+
+        {/* 2. THE KILL SWITCH (Emergency Placement) */}
+        <div className="mt-8 pt-8 border-t border-white/10">
+          <EmergencyKillSwitch />
+        </div>
+      </div>
+
+      {/* ... keep the rest: Events + Audit + 2FA ... */}
+    </div>
+  );
+};
+
 
   const refresh = async () => {
     try {
