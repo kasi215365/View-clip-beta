@@ -1,28 +1,3 @@
-# from live_stream_service import stop_stream, PROJECT_ID, LOCATION
-# from google.cloud.video import live_stream_v1
-
-@router.post("/kill-all-streams")
-async def kill_all_streams():
-    """Emergency shutdown for all active GCP infrastructure."""
-    try:
-        from google.cloud.video import live_stream_v1
-        from live_stream_service import stop_stream, PROJECT_ID, LOCATION
-
-        client = live_stream_v1.LivestreamServiceClient()
-        parent = f"projects/{PROJECT_ID}/locations/{LOCATION}"
-        
-        channels = client.list_channels(parent=parent)
-        count = 0
-        for channel in channels:
-            # Extract ID from 'projects/.../locations/.../channels/ID'
-            c_id = channel.name.split('/')[-1]
-            stream_id = c_id.replace("vc-ch-", "")
-            await stop_stream(stream_id)
-            count += 1
-            
-        return {"status": "success", "terminated": count}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
 """Admin command center — stats, users, settings, payouts, system/health,
 deploy-update, rotate-keys, system events, audit log, streaming-provider switch."""
 import logging
@@ -32,6 +7,8 @@ import uuid
 from typing import Dict
 
 from fastapi import APIRouter, Depends, HTTPException
+from google.cloud.video import live_stream_v1
+from live_stream_service import stop_stream, PROJECT_ID, LOCATION
 
 import live_stream_service
 import stripe_service
@@ -377,6 +354,26 @@ async def admin_audit(_admin: User = Depends(require_admin)):
     logs = await db.audit_log.find({}, {"_id": 0}).sort("created_at", -1).to_list(200)
     return {"audit": logs}
 
+@router.post("/kill-all-streams")
+async def kill_all_streams():
+    """Emergency shutdown for all active GCP infrastructure."""
+    try:
+        # We initialize the client inside the function to ensure it's fresh
+        client = live_stream_v1.LivestreamServiceClient()
+        parent = f"projects/{PROJECT_ID}/locations/{LOCATION}"
+        
+        channels = client.list_channels(parent=parent)
+        count = 0
+        for channel in channels:
+            # Extract ID from 'projects/.../locations/.../channels/ID'
+            c_id = channel.name.split('/')[-1]
+            stream_id = c_id.replace("vc-ch-", "")
+            await stop_stream(stream_id)
+            count += 1
+            
+        return {"status": "success", "terminated": count}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 # -----------------------------------------------------------------------------
 # STREAMING PROVIDERS
