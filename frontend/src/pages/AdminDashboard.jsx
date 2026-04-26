@@ -1,5 +1,6 @@
-import BurnRateMonitor from '../components/ui/BurnRateMonitor';
-import EmergencyKillSwitch from '../components/ui/EmergencyKillSwitch';
+import BurnRateMonitor from '@/components/ui/BurnRateMonitor';
+import EmergencyKillSwitch from '@/components/ui/EmergencyKillSwitch';
+
 import { useState, useEffect, useContext } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { AuthContext, API } from '@/App';
