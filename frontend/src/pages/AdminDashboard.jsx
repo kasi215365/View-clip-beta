@@ -341,8 +341,6 @@ const AdminDashboard = () => {
   );
 };
 
-// ... [Keep everything ABOVE line 369 exactly as you have it] ...
-
 const StatCard = ({ label, value, sub, icon, color }) => {
   const colors = {
     cyan: 'text-cyan-400 bg-cyan-400/10',
