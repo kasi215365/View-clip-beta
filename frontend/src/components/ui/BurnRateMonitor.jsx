@@ -24,3 +24,5 @@ const BurnRateMonitor = ({ gcp_burn_stats }) => {
     </div>
   );
 };
+
+export default BurnRateMonitor;
