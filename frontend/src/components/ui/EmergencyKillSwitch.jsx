@@ -48,3 +48,5 @@ const EmergencyKillSwitch = () => {
     </div>
   );
 };
+
+export default EmergencyKillSwitch;
