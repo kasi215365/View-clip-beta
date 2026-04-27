@@ -9,8 +9,8 @@ Each DB can be migrated to its own physical cluster by changing env vars only.
 import os
 from motor.motor_asyncio import AsyncIOMotorClient
 
-mongo_url = os.environ['MONGO_URL']
-client = AsyncIOMotorClient(mongo_url)
+MONGO_URL = os.environ.get("MONGODB_URL", "mongodb://localhost:27017")
+client = AsyncIOMotorClient(MONGO_URL)
 
 _LEGACY_DB_NAME = os.environ['DB_NAME']
 _IDENTITY_DB_NAME = os.environ.get('DB_NAME_IDENTITY', f"{_LEGACY_DB_NAME}_identity")
