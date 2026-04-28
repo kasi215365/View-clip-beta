@@ -18,7 +18,7 @@ import AdminLogin from "@/pages/AdminLogin";
 import { Toaster } from "@/components/ui/sonner";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
-export const API = "https://viewclip-admin.up.railway.app";
+export const API = "https://viewclip-admin.up.railway.app/api";
 
 export const AuthContext = React.createContext();
 
