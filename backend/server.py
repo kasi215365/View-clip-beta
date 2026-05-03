@@ -158,10 +158,9 @@ async def startup_bootstrap():
         "Integrations — Stripe: %s | Live Stream: %s",
         "REAL" if stripe_service.real_stripe_enabled()
         else "MOCK (set STRIPE_API_KEY to real sk_test_/sk_live_ key to activate)",
-        "REAL (GCP)" if live_stream_service.is_live_enabled()
-        else "MOCK (set GOOGLE_CLOUD_PROJECT + LIVESTREAM_GCS_BUCKET + "
-             "GOOGLE_SERVICE_ACCOUNT_JSON/GOOGLE_APPLICATION_CREDENTIALS to activate)",
-    )    # Start the safety watchdog in the background
+        "REAL (Cloudflare)" if live_stream_service.is_live_enabled()
+else "MOCK (Check CLOUDFLARE_API_TOKEN in Railway)"
+    # Start the safety watchdog in the background
     asyncio.create_task(run_watchdog())
     logger.info("Watchdog protection system: ACTIVE")
 
