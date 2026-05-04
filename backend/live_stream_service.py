@@ -47,6 +47,7 @@ async def provision_stream(stream_id: str) -> Dict[str, Any]:
     # REAL CLOUDFLARE LOGIC
     # This matches the playback URL format seen in image_42.png
     playback_base = "https://customer-9j4l1hq89yi1muyd.cloudflarestream.com/340fafedcee8f68d1a4eac6518df78de/manifest/video.m3u8"
+
 return {
         "mode": "cloudflare",
         "ingest_url": "rtmps://live.cloudflare.com:443/live/",
