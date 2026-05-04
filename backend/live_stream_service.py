@@ -19,22 +19,19 @@ def is_live_enabled() -> bool:
 async def active_channels_cost() -> Dict[str, Any]:
     """
     Stub for the watchdog to prevent attribute errors.
-    Cloudflare Stream does not have per-minute channel costs like GCP.
     """
     return {
         "mode": "cloudflare",
         "active_channels": 0, 
         "estimated_hourly_cost": 0.0,
-        "note": "Cloudflare billing is usage-based (minutes delivered/stored)."
+        "note": "Cloudflare billing is usage-based."
     }
 
 async def provision_stream(stream_id: str) -> Dict[str, Any]:
     """
-    Returns your Cloudflare credentials. 
-    The stream_id is used to create a unique playback path.
+    Returns your Cloudflare credentials and specific HLS manifest.
     """
     if not is_live_enabled():
-        # Fallback to your existing mock logic if env vars aren't set in Railway
         from uuid import uuid4
         key = uuid4().hex[:16]
         return {
@@ -45,14 +42,14 @@ async def provision_stream(stream_id: str) -> Dict[str, Any]:
         }
 
     # REAL CLOUDFLARE LOGIC
-    # This matches the playback URL format seen in image_42.png
-    playback_base = "https://customer-9j4l1hq89yi1muyd.cloudflarestream.com/340fafedcee8f68d1a4eac6518df78de/manifest/video.m3u8"
-
-return {
+    # Using your exact HLS manifest URL for the 340fafed... input
+    playback_url = f"https://customer-9j4l1hq89yi1muyd.cloudflarestream.com/{INPUT_ID}/manifest/video.m3u8"
+    
+    return {
         "mode": "cloudflare",
         "ingest_url": "rtmps://live.cloudflare.com:443/live/",
         "stream_key": os.environ.get("STREAM_KEY"),
-        "playback_url": f"{playback_base}/manifest.m3u8",
+        "playback_url": playback_url,
         "input_id": INPUT_ID
     }
 
