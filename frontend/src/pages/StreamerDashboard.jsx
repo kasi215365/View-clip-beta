@@ -7,7 +7,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { 
   DollarSign, Eye, LogOut, Youtube, Twitch, BarChart3, Heart, 
   Link2 as LinkIcon, StopCircle, RefreshCw, Download, Share2, 
-  ShieldCheck, Zap, History, PlayCircle
+  ShieldCheck, Zap, History, PlayCircle, Settings
 } from 'lucide-react';
 import Logo from '@/components/Logo';
 import NotificationBell from '@/components/NotificationBell';
@@ -22,6 +22,9 @@ const StreamerDashboard = () => {
   const [pastStreams, setPastStreams] = useState([]);
   const [analytics, setAnalytics] = useState({ views: 0, subs: 0, revenue: 0, watchTime: '0h' });
   const [loading, setLoading] = useState(true);
+  
+  // --- Path Switch State ---
+  const [useEncoder, setUseEncoder] = useState(false);
   
   // --- Broadcast & Camera State ---
   const [isBroadcasting, setIsBroadcasting] = useState(false);
@@ -41,7 +44,6 @@ const StreamerDashboard = () => {
         axios.get(`${API}/streams`),
         axios.get(`${API}/streamers/me/analytics`)
       ]);
-      // Filter for past/saved content only
       setPastStreams(streamsRes.data.filter(s => s.streamer_id === user.id));
       if (analyticsRes.data) setAnalytics(analyticsRes.data);
     } catch (e) {
@@ -66,7 +68,6 @@ const StreamerDashboard = () => {
       setLocalStreamActive(true);
       setIsBroadcasting(true);
 
-      // Safari Mounting & Mirror Logic
       setTimeout(async () => {
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
@@ -108,7 +109,6 @@ const StreamerDashboard = () => {
 
   return (
     <div className="min-h-screen bg-[#05070F] text-white">
-      {/* Navigation */}
       <nav className="fixed top-0 w-full z-50 glass-effect px-6 py-4 border-b border-white/5">
         <div className="max-w-7xl mx-auto flex justify-between items-center">
           <Logo size="md" />
@@ -120,7 +120,6 @@ const StreamerDashboard = () => {
       </nav>
 
       <div className="pt-24 px-4 md:px-6 pb-12 max-w-7xl mx-auto">
-        {/* Header */}
         <div className="flex flex-col md:flex-row justify-between items-start mb-8 gap-6">
           <div>
             <h1 className="text-4xl font-bold tracking-tight">Streamer Command</h1>
@@ -140,7 +139,6 @@ const StreamerDashboard = () => {
           </Dialog>
         </div>
 
-        {/* Analytics Suite */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
           {[
             { label: 'Live Viewers', val: analytics.views || 0, icon: Eye, color: 'text-cyan-400' },
@@ -168,60 +166,97 @@ const StreamerDashboard = () => {
 
           <TabsContent value="live">
             <div className="grid lg:grid-cols-3 gap-6">
-              {/* Active Broadcast Console */}
               <div className="lg:col-span-2 space-y-6">
+                
+                {/* Path Switcher */}
+                <div className="flex bg-white/5 p-1 rounded-xl border border-white/10 w-fit">
+                  <Button 
+                    variant={!useEncoder ? "secondary" : "ghost"} 
+                    size="sm" 
+                    onClick={() => setUseEncoder(false)}
+                    className="text-[10px] font-bold uppercase tracking-widest px-4 h-8"
+                  >
+                    Direct Path
+                  </Button>
+                  <Button 
+                    variant={useEncoder ? "secondary" : "ghost"} 
+                    size="sm" 
+                    onClick={() => setUseEncoder(true)}
+                    className="text-[10px] font-bold uppercase tracking-widest px-4 h-8"
+                  >
+                    Encoder Path
+                  </Button>
+                </div>
+
                 <div className="glass-panel rounded-3xl overflow-hidden border border-white/10 bg-black/20">
-                  <div className="relative aspect-video bg-black">
-                    <video 
-                      ref={videoRef} 
-                      autoPlay 
-                      muted 
-                      playsInline 
-                      className={`w-full h-full object-cover transition-opacity duration-500 ${localStreamActive ? 'opacity-100' : 'opacity-0'}`} 
-                    />
-                    {!localStreamActive && (
-                      <div className="absolute inset-0 flex items-center justify-center bg-[#070912]">
-                         <p className="text-gray-700 font-mono text-sm tracking-tighter italic">SIGNAL_IDLE</p>
+                  {!useEncoder ? (
+                    <>
+                      <div className="relative aspect-video bg-black">
+                        <video 
+                          ref={videoRef} 
+                          autoPlay 
+                          muted 
+                          playsInline 
+                          className={`w-full h-full object-cover transition-opacity duration-500 ${localStreamActive ? 'opacity-100' : 'opacity-0'}`} 
+                        />
+                        {!localStreamActive && (
+                          <div className="absolute inset-0 flex items-center justify-center bg-[#070912]">
+                             <p className="text-gray-700 font-mono text-sm tracking-tighter italic">SIGNAL_IDLE</p>
+                          </div>
+                        )}
+                        <div className="absolute top-4 left-4 flex gap-2">
+                           {isBroadcasting && <div className="bg-red-600 px-3 py-1 rounded text-[10px] font-black animate-pulse uppercase">Live</div>}
+                           <div className="bg-black/60 px-3 py-1 rounded text-[10px] font-bold backdrop-blur-md uppercase tracking-tighter border border-white/10">
+                            {facingMode === 'user' ? 'Front Cam' : 'Back Cam'}
+                           </div>
+                        </div>
+                        {localStreamActive && (
+                          <Button onClick={toggleCamera} className="absolute bottom-4 right-4 bg-white/10 hover:bg-white/20 backdrop-blur-xl rounded-full p-4 h-14 w-14 border border-white/20">
+                            <RefreshCw className="w-6 h-6 text-cyan-400" />
+                          </Button>
+                        )}
                       </div>
-                    )}
-                    
-                    <div className="absolute top-4 left-4 flex gap-2">
-                       {isBroadcasting && <div className="bg-red-600 px-3 py-1 rounded text-[10px] font-black animate-pulse uppercase">Live</div>}
-                       <div className="bg-black/60 px-3 py-1 rounded text-[10px] font-bold backdrop-blur-md uppercase tracking-tighter border border-white/10">
-                        {facingMode === 'user' ? 'Front Cam' : 'Back Cam'}
-                       </div>
-                    </div>
-
-                    {localStreamActive && (
-                      <Button onClick={toggleCamera} className="absolute bottom-4 right-4 bg-white/10 hover:bg-white/20 backdrop-blur-xl rounded-full p-4 h-14 w-14 border border-white/20">
-                        <RefreshCw className="w-6 h-6 text-cyan-400" />
-                      </Button>
-                    )}
-                  </div>
-
-                  <div className="p-6">
-                    <div className="flex justify-between items-center mb-4">
-                      <h3 className="text-2xl font-bold">New Session</h3>
-                      <div className="flex items-center text-[10px] text-gray-500 uppercase tracking-widest">
-                        <Zap className="w-3 h-3 mr-1 text-cyan-400"/> Direct Path
+                      <div className="p-6">
+                        <div className="flex justify-between items-center mb-4">
+                          <h3 className="text-2xl font-bold">Live Stream Engine</h3>
+                          <div className="flex items-center text-[10px] text-gray-500 uppercase tracking-widest">
+                            <Zap className="w-3 h-3 mr-1 text-cyan-400"/> WebRTC Path
+                          </div>
+                        </div>
+                        <Button onClick={startDirectBroadcast} className={`w-full font-black py-8 rounded-2xl text-lg uppercase transition-all ${isBroadcasting ? 'bg-red-600 text-white' : 'bg-cyan-400 text-black hover:brightness-110'}`}>
+                          {isBroadcasting ? "Cease Signal" : "Initialize Direct Broadcast"}
+                        </Button>
+                      </div>
+                    </>
+                  ) : (
+                    <div className="p-8 space-y-6 min-h-[400px] flex flex-col justify-center">
+                      <div className="flex items-center justify-between">
+                         <h3 className="text-xl font-bold italic uppercase tracking-tighter">Encoder Configuration</h3>
+                         <Settings className="text-cyan-400 w-5 h-5 animate-spin-slow" />
+                      </div>
+                      <p className="text-xs text-gray-400 leading-relaxed">Broadcast via OBS, Prism, or vMix using these secure RTMP credentials.</p>
+                      
+                      <div className="space-y-4">
+                        <div className="space-y-2">
+                          <label className="text-[10px] font-bold text-gray-500 uppercase tracking-widest">RTMP Server URL</label>
+                          <div className="flex gap-2">
+                            <input readOnly value="rtmps://live.cloudflare.com:443/live/" className="flex-1 bg-white/5 border border-white/10 rounded-lg p-3 text-xs font-mono" />
+                            <Button variant="outline" size="sm" onClick={() => {navigator.clipboard.writeText("rtmps://live.cloudflare.com:443/live/"); toast.success("Copied URL");}}><Download className="w-4 h-4"/></Button>
+                          </div>
+                        </div>
+                        <div className="space-y-2">
+                          <label className="text-[10px] font-bold text-gray-500 uppercase tracking-widest">Stream Key</label>
+                          <div className="flex gap-2">
+                            <input readOnly type="password" value="6ef4e44200f89257909749dd7935badc" className="flex-1 bg-white/5 border border-white/10 rounded-lg p-3 text-xs font-mono" />
+                            <Button variant="outline" size="sm" onClick={() => {navigator.clipboard.writeText("6ef4e44200f89257909749dd7935badc"); toast.success("Copied Key");}}><Download className="w-4 h-4"/></Button>
+                          </div>
+                        </div>
                       </div>
                     </div>
-                    <div className="flex gap-4">
-                      {!isBroadcasting ? (
-                        <Button onClick={startDirectBroadcast} className="flex-1 bg-cyan-400 text-black font-black py-8 rounded-2xl text-lg hover:brightness-110 transition-all">
-                          INITIALIZE BROADCAST
-                        </Button>
-                      ) : (
-                        <Button onClick={() => setIsBroadcasting(false)} className="flex-1 bg-red-600 text-white font-black py-8 rounded-2xl text-lg">
-                          CEASE SIGNAL
-                        </Button>
-                      )}
-                    </div>
-                  </div>
+                  )}
                 </div>
               </div>
 
-              {/* Sidebar: Syndication */}
               <div className="space-y-6">
                 <div className="glass-panel p-6 rounded-3xl border border-white/10">
                   <h4 className="font-bold flex items-center mb-6 text-gray-400 uppercase text-[10px] tracking-widest">
