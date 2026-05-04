@@ -16,6 +16,18 @@ def is_live_enabled() -> bool:
     """Checks for Cloudflare credentials instead of GCP."""
     return bool(os.environ.get("CLOUDFLARE_API_TOKEN") and os.environ.get("STREAM_KEY"))
 
+async def active_channels_cost() -> Dict[str, Any]:
+    """
+    Stub for the watchdog to prevent attribute errors.
+    Cloudflare Stream does not have per-minute channel costs like GCP.
+    """
+    return {
+        "mode": "cloudflare",
+        "active_channels": 0, 
+        "estimated_hourly_cost": 0.0,
+        "note": "Cloudflare billing is usage-based (minutes delivered/stored)."
+    }
+
 async def provision_stream(stream_id: str) -> Dict[str, Any]:
     """
     Returns your Cloudflare credentials. 
