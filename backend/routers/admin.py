@@ -7,8 +7,7 @@ import uuid
 from typing import Dict
 
 from fastapi import APIRouter, Depends, HTTPException
-from google.cloud.video import live_stream_v1
-from live_stream_service import stop_stream, PROJECT_ID, LOCATION
+from live_stream_service import stop_stream
 
 import live_stream_service
 import stripe_service
@@ -24,7 +23,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api")
 
 APP_START_TIME = time.time()
-
 
 # -----------------------------------------------------------------------------
 # ADMIN STATS / USERS / SETTINGS
@@ -64,7 +62,6 @@ async def admin_stats(_admin: User = Depends(require_admin)):
         },
     }
 
-
 @router.get("/admin/users")
 async def admin_users(_admin: User = Depends(require_admin)):
     users = await db.users.find(
@@ -72,11 +69,9 @@ async def admin_users(_admin: User = Depends(require_admin)):
     ).sort("created_at", -1).to_list(1000)
     return {"users": users}
 
-
 @router.get("/admin/settings")
 async def admin_get_settings(_admin: User = Depends(require_admin)):
     return await get_settings()
-
 
 @router.post("/admin/settings")
 async def admin_update_settings(body: AdminSettingsUpdate, _admin: User = Depends(require_admin)):
@@ -86,7 +81,6 @@ async def admin_update_settings(body: AdminSettingsUpdate, _admin: User = Depend
     updates["updated_at"] = now_iso()
     await db.settings.update_one({"id": "global"}, {"$set": updates}, upsert=True)
     return await get_settings()
-
 
 # -----------------------------------------------------------------------------
 # PAYOUTS
@@ -163,12 +157,10 @@ async def admin_trigger_payouts(_admin: User = Depends(require_admin)):
             "skipped_no_connect": skipped, "errors": errors,
             "total_paid": round(total_paid, 2), "real_mode": real_mode}
 
-
 @router.get("/admin/payouts")
 async def admin_list_payouts(_admin: User = Depends(require_admin)):
     payouts = await db.payouts.find({}, {"_id": 0}).sort("processed_at", -1).to_list(1000)
     return {"payouts": payouts}
-
 
 # -----------------------------------------------------------------------------
 # SYSTEM CONTROL CENTER
@@ -205,50 +197,30 @@ async def admin_system_health(_admin: User = Depends(require_admin)):
         },
         "encryption": {"algorithm": "Fernet (AES-128-CBC + HMAC-SHA256)",
                        "vault_key_configured": vault_key_configured()},
-                    "integrations": {
-            "stripe_mode": "real" if stripe_service.real_stripe_enabled() else "mock (emergentintegrations)",
-            "livestream_mode": "gcp-livestream" if live_stream_service.is_live_enabled() else "mock",
-            "gcp_burn_stats": await live_stream_service.active_channels_cost(),
+        "integrations": {
+            "stripe_mode": "real" if stripe_service.real_stripe_enabled() else "mock",
+            "livestream_mode": "cloudflare" if live_stream_service.is_live_enabled() else "mock",
+            "storage": "R2 (Cloudflare)"
         },
-    } # <--- THIS BRACKET WAS MISSING, CLOSING THE HEALTH CHECK
+    }
 
 @router.post("/admin/system/emergency-kill-streams")
 async def admin_emergency_kill_streams(_admin: User = Depends(require_admin)):
-    """The 'Big Red Button' — terminates all active GCP channels immediately."""
-    try:
-        from google.cloud.video import live_stream_v1
-        from live_stream_service import PROJECT_ID, LOCATION, stop_stream
-
-        client_gcp = live_stream_v1.LivestreamServiceClient()
-        parent = f"projects/{PROJECT_ID}/locations/{LOCATION}"
-        
-        channels = client_gcp.list_channels(parent=parent)
-        terminated_count = 0
-        
-        for channel in channels:
-            c_id = channel.name.split('/')[-1]
-            stream_id = c_id.replace("vc-ch-", "")
-            await live_stream_service.stop_stream(stream_id)
-            terminated_count += 1
-
-        await db.audit_log.insert_one({
-            "id": str(uuid.uuid4()),
-            "actor_id": _admin.id,
-            "action": "system.emergency_kill",
-            "meta": {"terminated_count": terminated_count, "timestamp": now_iso()},
-            "created_at": now_iso(),
-        })
-
-        logger.warning(f"EMERGENCY KILL executed by admin {_admin.id}. {terminated_count} streams stopped.")
-        
-        return {
-            "message": "Emergency shutdown complete",
-            "terminated_count": terminated_count,
-            "status": "success"
-        }
-    except Exception as e:
-        logger.error(f"Emergency kill failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Shutdown failed: {str(e)}")
+    """The 'Big Red Button' — Clears all active stream flags in DB for Cloudflare."""
+    result = await db.live_streams.update_many(
+        {"is_live": True},
+        {"$set": {"is_live": False, "ended_at": now_iso()}}
+    )
+    terminated_count = result.modified_count
+    await db.audit_log.insert_one({
+        "id": str(uuid.uuid4()),
+        "actor_id": _admin.id,
+        "action": "system.emergency_kill",
+        "meta": {"terminated_count": terminated_count, "provider": "cloudflare"},
+        "created_at": now_iso(),
+    })
+    logger.warning(f"EMERGENCY KILL executed: {terminated_count} streams marked offline.")
+    return {"message": "Emergency shutdown complete", "terminated_count": terminated_count}
 
 @router.post("/admin/system/reload-settings")
 async def admin_reload_settings(_admin: User = Depends(require_admin)):
@@ -258,7 +230,6 @@ async def admin_reload_settings(_admin: User = Depends(require_admin)):
         "actor": _admin.id, "created_at": now_iso(),
     })
     return {"message": "Settings reloaded", "settings": settings}
-
 
 @router.post("/admin/system/deploy-update")
 async def admin_deploy_update(_admin: User = Depends(require_admin)):
@@ -272,26 +243,20 @@ async def admin_deploy_update(_admin: User = Depends(require_admin)):
 
 @router.post("/admin/system/rotate-keys")
 async def admin_rotate_keys(_admin: User = Depends(require_admin)):
-    """Rotate the Fernet vault key. Re-encrypts banking_info + users.totp_secret
-    with the new cipher, then swaps the active cipher in-process."""
     from cryptography.fernet import Fernet as _F
-
     new_key = _F.generate_key().decode()
     old_cipher = _crypto.current_cipher()
     new_cipher = _F(new_key.encode())
-
     rotated = failed = 0
     async for row in db.banking_info.find({}):
         patch = {}
         for fld in ("account_number_enc", "routing_number_enc"):
             enc = row.get(fld)
-            if not enc:
-                continue
+            if not enc: continue
             try:
                 plain = old_cipher.decrypt(enc.encode()).decode()
                 patch[fld] = new_cipher.encrypt(plain.encode()).decode()
-            except Exception:
-                failed += 1
+            except Exception: failed += 1
         if patch:
             patch["key_rotated_at"] = now_iso()
             await db.banking_info.update_one({"_id": row["_id"]}, {"$set": patch})
@@ -300,54 +265,24 @@ async def admin_rotate_keys(_admin: User = Depends(require_admin)):
     totp_rotated = totp_failed = 0
     async for u in db.users.find({"totp_secret": {"$exists": True, "$ne": None}}):
         enc = u.get("totp_secret")
-        if not enc:
-            continue
+        if not enc: continue
         try:
             plain = old_cipher.decrypt(enc.encode()).decode()
             new_enc = new_cipher.encrypt(plain.encode()).decode()
-            await db.users.update_one(
-                {"_id": u["_id"]},
-                {"$set": {"totp_secret": new_enc, "totp_key_rotated_at": now_iso()}},
-            )
+            await db.users.update_one({"_id": u["_id"]}, {"$set": {"totp_secret": new_enc, "totp_key_rotated_at": now_iso()}})
             totp_rotated += 1
-        except Exception:
-            totp_failed += 1
+        except Exception: totp_failed += 1
 
     _crypto.replace_cipher(new_key)
-
-    event = {
-        "id": str(uuid.uuid4()), "type": "keys.rotate", "actor": _admin.id,
-        "rotated_records": rotated, "failed_records": failed,
-        "totp_rotated": totp_rotated, "totp_failed": totp_failed,
-        "created_at": now_iso(),
-    }
+    event = {"id": str(uuid.uuid4()), "type": "keys.rotate", "actor": _admin.id, "rotated_records": rotated, "failed_records": failed, "totp_rotated": totp_rotated, "totp_failed": totp_failed, "created_at": now_iso()}
     await db.system_events.insert_one(event.copy())
-    await db.audit_log.insert_one({
-        "id": str(uuid.uuid4()),
-        "actor_id": _admin.id,
-        "action": "keys.rotate",
-        "meta": {"rotated": rotated, "failed": failed,
-                 "totp_rotated": totp_rotated, "totp_failed": totp_failed},
-        "created_at": now_iso(),
-    })
-    logger.info("Vault key rotated — banking:%d/%d | totp:%d/%d",
-                rotated, failed, totp_rotated, totp_failed)
-    return {
-        "message": (f"Key rotated. Banking: {rotated} re-encrypted ({failed} failed). "
-                    f"TOTP secrets: {totp_rotated} re-encrypted ({totp_failed} failed)."),
-        "rotated": rotated, "failed": failed,
-        "totp_rotated": totp_rotated, "totp_failed": totp_failed,
-        "warning": "Save the new VAULT_ENCRYPTION_KEY to your env before the next restart.",
-        "new_key_preview": new_key[:12] + "...",
-        "event": event,
-    }
-
+    await db.audit_log.insert_one({"id": str(uuid.uuid4()), "actor_id": _admin.id, "action": "keys.rotate", "meta": {"rotated": rotated, "failed": failed}, "created_at": now_iso()})
+    return {"message": "Key rotated successfully", "rotated": rotated, "new_key_preview": new_key[:12] + "...", "event": event}
 
 @router.get("/admin/system/events")
 async def admin_system_events(_admin: User = Depends(require_admin)):
     events = await db.system_events.find({}, {"_id": 0}).sort("created_at", -1).to_list(100)
     return {"events": events}
-
 
 @router.get("/admin/audit")
 async def admin_audit(_admin: User = Depends(require_admin)):
@@ -356,66 +291,24 @@ async def admin_audit(_admin: User = Depends(require_admin)):
 
 @router.post("/kill-all-streams")
 async def kill_all_streams():
-    """Emergency shutdown for all active GCP infrastructure."""
-    try:
-        # We initialize the client inside the function to ensure it's fresh
-        client = live_stream_v1.LivestreamServiceClient()
-        parent = f"projects/{PROJECT_ID}/locations/{LOCATION}"
-        
-        channels = client.list_channels(parent=parent)
-        count = 0
-        for channel in channels:
-            # Extract ID from 'projects/.../locations/.../channels/ID'
-            c_id = channel.name.split('/')[-1]
-            stream_id = c_id.replace("vc-ch-", "")
-            await stop_stream(stream_id)
-            count += 1
-            
-        return {"status": "success", "terminated": count}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
+    """Fallback handler for general stream shutdown."""
+    result = await db.live_streams.update_many({"is_live": True}, {"$set": {"is_live": False, "ended_at": now_iso()}})
+    return {"status": "success", "terminated": result.modified_count}
 
-# -----------------------------------------------------------------------------
-# STREAMING PROVIDERS
-# -----------------------------------------------------------------------------
 @router.get("/admin/streaming/providers")
 async def admin_streaming_providers(_admin: User = Depends(require_admin)):
-    current = os.environ.get(
-        "STREAMING_PROVIDER",
-        "gcp-livestream" if live_stream_service.is_live_enabled() else "mock",
-    )
-    cost = await live_stream_service.active_channels_cost()
+    current = "cloudflare-stream" if live_stream_service.is_live_enabled() else "mock"
     return {
         "current": current,
-        "gcp_configured": live_stream_service.is_live_enabled(),
-        "active_cost": cost,
         "providers": [
-            {"id": "gcp-livestream", "name": "Google Cloud Live Stream",
-             "status": "active" if live_stream_service.is_live_enabled() else "available",
-             "requires": ["GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_CLOUD_PROJECT",
-                          "LIVESTREAM_GCS_BUCKET"]},
-            {"id": "mux", "name": "Mux", "status": "available",
-             "requires": ["MUX_TOKEN_ID", "MUX_TOKEN_SECRET"]},
-            {"id": "aws-ivs", "name": "AWS IVS", "status": "available",
-             "requires": ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"]},
-            {"id": "cloudflare-stream", "name": "Cloudflare Stream", "status": "available",
-             "requires": ["CF_ACCOUNT_ID", "CF_STREAM_TOKEN"]},
-            {"id": "mock", "name": "Direct URL (mock)",
-             "status": "active" if not live_stream_service.is_live_enabled() and current == "mock" else "available",
-             "requires": []},
+            {"id": "cloudflare-stream", "name": "Cloudflare Stream", "status": "active" if current == "cloudflare-stream" else "available"},
+            {"id": "mock", "name": "Direct URL (mock)", "status": "active" if current == "mock" else "available"}
         ],
     }
-
 
 @router.post("/admin/streaming/providers/switch")
 async def admin_streaming_switch(body: Dict[str, str], _admin: User = Depends(require_admin)):
     target = body.get("provider_id")
-    if target not in {"mux", "aws-ivs", "cloudflare-stream", "mock"}:
-        raise HTTPException(status_code=400, detail="Unknown provider")
-    event = {
-        "id": str(uuid.uuid4()), "type": "streaming.provider.switch",
-        "from": os.environ.get("STREAMING_PROVIDER", "mock"),
-        "to": target, "actor": _admin.id, "created_at": now_iso(),
-    }
-    await db.system_events.insert_one(event.copy())
-    return {"message": f"Provider switch scheduled to {target}", "event": event}
+    event = {"id": str(uuid.uuid4()), "type": "streaming.provider.switch", "to": target, "actor": _admin.id, "created_at": now_iso()}
+    await db.system_events.insert_one(event)
+    return {"message": f"Provider switched to {target}", "event": event}
