@@ -6,8 +6,8 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { 
   DollarSign, Eye, LogOut, Youtube, Twitch, BarChart3, Heart, 
-  Link2 as LinkIcon, StopCircle, RefreshCw, Download, Share2, 
-  ShieldCheck, Zap, History, PlayCircle, Settings
+  Link2 as LinkIcon, RefreshCw, Download, Share2, 
+  Zap, History, PlayCircle, Settings
 } from 'lucide-react';
 import Logo from '@/components/Logo';
 import NotificationBell from '@/components/NotificationBell';
@@ -99,6 +99,41 @@ const StreamerDashboard = () => {
       setIsBroadcasting(false);
     }
   };
+
+  // --- OPTIMIZED: The Immediate Responsiveness Cease Function ---
+  const ceaseBroadcastSignal = () => {
+      // 1. IMMEDIATE UI RESET: Flips visual state instantly for the user.
+      setIsBroadcasting(false);
+      setLocalStreamActive(false);
+
+      console.log("VIEWCLIP_COMMAND [PHI]: Broadcast signal terminated by user. Beginning immediate teardown.");
+      toast.info("Stream Ceased Immediately.");
+
+      // 2. EXPLICIT HARDWARE SHUTDOWN: Forces tracks to stop.
+      if (currentStream.current) {
+          currentStream.current.getTracks().forEach(track => {
+              if (track.readyState === 'live') {
+                  track.stop();
+              }
+          });
+          currentStream.current = null;
+      }
+
+      // 3. VIDEO ELEMENT RESET: Prevents visual lag/freezing in Safari.
+      if (videoRef.current) {
+          videoRef.current.srcObject = null;
+          if (!videoRef.current.paused) {
+              videoRef.current.pause();
+          }
+      }
+
+      // 4. PEER CONNECTION TEARDOWN: Clean up the WebRTC session.
+      if (peerConnection.current) {
+          peerConnection.current.close();
+          peerConnection.current = null;
+      }
+  };
+  // ------------------------------------------------------------
 
   const toggleCamera = () => {
     setFacingMode(prev => prev === "user" ? "environment" : "user");
@@ -223,7 +258,14 @@ const StreamerDashboard = () => {
                             <Zap className="w-3 h-3 mr-1 text-cyan-400"/> WebRTC Path
                           </div>
                         </div>
-                        <Button onClick={startDirectBroadcast} className={`w-full font-black py-8 rounded-2xl text-lg uppercase transition-all ${isBroadcasting ? 'bg-red-600 text-white' : 'bg-cyan-400 text-black hover:brightness-110'}`}>
+                        {/* UPDATED BUTTON HANDLER: 
+                          If broadcasting, call the optimized ceaseBroadcastSignal function 
+                          for immediate responsiveness.
+                        */}
+                        <Button 
+                          onClick={isBroadcasting ? ceaseBroadcastSignal : startDirectBroadcast} 
+                          className={`w-full font-black py-8 rounded-2xl text-lg uppercase transition-all ${isBroadcasting ? 'bg-red-600 text-white' : 'bg-cyan-400 text-black hover:brightness-110'}`}
+                        >
                           {isBroadcasting ? "Cease Signal" : "Initialize Direct Broadcast"}
                         </Button>
                       </div>
